@@ -1,0 +1,25 @@
+HTTP/2 server listening on port 8080...
+Waiting for connections...
+
+New client connected from ::1
+
+[Stream 1] Received headers:
+  :method: GET
+  :scheme: http
+  :authority: †‰ù	∏
+  :path: /
+  user-agent: %∂P√À∫∏
+  accept: */*
+[Stream 1] Request complete
+[Stream 1] GET /
+[Stream 1] Response sent
+Connection error: closed stream
+/Users/aaron/git/htwo/http2.rb:106:in 'IO#read'
+/Users/aaron/git/htwo/http2.rb:106:in 'HTTP2::Frame.parse'
+/Users/aaron/git/htwo/http2.rb:533:in 'block in HTTP2::Connection#run'
+/Users/aaron/git/htwo/http2.rb:532:in 'Kernel#loop'
+/Users/aaron/git/htwo/http2.rb:532:in 'HTTP2::Connection#run'
+/Users/aaron/git/htwo/http2.rb:857:in 'HTTP2::Server#start'
+server_example.rb:81:in 'block (2 levels) in <main>'
+
+Client disconnected

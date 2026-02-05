@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(ruby test_http2.rb:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(curl:*)",
+      "Bash(kill:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)",
+      "Bash(ruby:*)",
+      "Bash(./test_with_curl.sh)",
+      "Bash(for file in *.rb)",
+      "Bash(do sed -i '' \"s|require_relative ''http2''|require_relative ''../lib/http2''|g\" \"$file\")",
+      "Bash(done)"
+    ]
+  }
+}
