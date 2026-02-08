@@ -13,7 +13,9 @@
       "Bash(./test_with_curl.sh)",
       "Bash(for file in *.rb)",
       "Bash(do sed -i '' \"s|require_relative ''http2''|require_relative ''../lib/http2''|g\" \"$file\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(rake test:*)",
+      "Bash(tree:*)"
     ]
   }
 }
