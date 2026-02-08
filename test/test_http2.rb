@@ -7,8 +7,8 @@ require_relative '../lib/http2'
 
 class TestHTTP2 < Minitest::Test
   def test_hpack_encoding_decoding
-    encoder = HTTP2::HPACK.new
-    decoder = HTTP2::HPACK.new
+    encoder = HTWO::HPACK.new
+    decoder = HTWO::HPACK.new
 
     headers = [[":method", "GET"], [":path", "/"]]
     encoded = encoder.encode(headers)
@@ -18,9 +18,9 @@ class TestHTTP2 < Minitest::Test
   end
 
   def test_frame_encoding_decoding
-    frame = HTTP2::Frame.new(
+    frame = HTWO::Frame.new(
       type: :headers,
-      flags: HTTP2::FLAGS[:end_headers],
+      flags: HTWO::FLAGS[:end_headers],
       stream_id: 1,
       payload: "test payload"
     )
@@ -29,7 +29,7 @@ class TestHTTP2 < Minitest::Test
     assert_equal 21, binary.bytesize
 
     io = StringIO.new(binary)
-    decoded = HTTP2::Frame.parse(io)
+    decoded = HTWO::Frame.parse(io)
 
     assert_equal :headers, decoded.type
     assert_equal 1, decoded.stream_id
@@ -44,7 +44,7 @@ class TestHTTP2 < Minitest::Test
 
     # Server thread
     server_thread = Thread.new do
-      http2 = HTTP2::Server.new(server_sock)
+      http2 = HTWO::Server.new(server_sock)
 
       http2.on_headers do |stream, headers|
         server_received << { type: :headers, data: headers }
@@ -65,7 +65,7 @@ class TestHTTP2 < Minitest::Test
     # Client thread
     client_thread = Thread.new do
       sleep 0.1
-      http2 = HTTP2::Client.new(client_sock)
+      http2 = HTWO::Client.new(client_sock)
 
       http2.on_headers do |stream, headers|
         client_received << { type: :headers, data: headers }

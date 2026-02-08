@@ -2,7 +2,7 @@
 
 require "http2/huffman"
 
-module HTTP2
+module HTWO
   # HTTP/2 Frame Types
   FRAME_TYPES = {
     data: 0x0,
@@ -928,7 +928,7 @@ end
 # server = TCPServer.new(8080)
 # client_socket = server.accept
 #
-# http2_server = HTTP2::Server.new(client_socket)
+# http2_server = HTWO::Server.new(client_socket)
 #
 # http2_server.on_headers do |stream, headers|
 #   puts "Received headers on stream #{stream.id}:"
@@ -952,7 +952,7 @@ end
 #
 # socket = TCPSocket.new('localhost', 8080)
 #
-# http2_client = HTTP2::Client.new(socket)
+# http2_client = HTWO::Client.new(socket)
 # http2_client.start
 #
 # http2_client.on_headers do |stream, headers|

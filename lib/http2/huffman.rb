@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Huffman coding for HPACK (RFC 7541 Appendix B)
-module HTTP2
+module HTWO
   module Huffman
     # Huffman decoding tree built from RFC 7541 Appendix B
     # This is a simplified implementation using a lookup approach

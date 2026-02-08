@@ -15,7 +15,7 @@ loop do
   puts "\nNew client connected from #{client_socket.peeraddr[2]}"
 
   # Create HTTP/2 server with the socket
-  http2_server = HTTP2::Server.new(client_socket)
+  http2_server = HTWO::Server.new(client_socket)
 
   # Handle incoming headers
   http2_server.on_headers do |stream, headers|

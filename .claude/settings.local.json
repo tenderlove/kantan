@@ -15,7 +15,8 @@
       "Bash(do sed -i '' \"s|require_relative ''http2''|require_relative ''../lib/http2''|g\" \"$file\")",
       "Bash(done)",
       "Bash(rake test:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(do sed -i '' 's/HTTP2::/HTWO::/g' \"$file\")"
     ]
   }
 }

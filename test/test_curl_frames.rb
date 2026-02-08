@@ -9,7 +9,7 @@ module HTWO
   class TestCurlFrames < Minitest::Test
     def test_connection_preface
       preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b
-      assert_equal HTTP2::CONNECTION_PREFACE, preface
+      assert_equal HTWO::CONNECTION_PREFACE, preface
     end
 
     def test_curl_settings_frame
@@ -25,7 +25,7 @@ module HTWO
       while pos < settings_payload.bytesize
         id = settings_payload.unpack1("n", offset: pos)
         value = settings_payload.unpack1("N", offset: pos + 2)
-        setting_name = HTTP2::SETTINGS.key(id)
+        setting_name = HTWO::SETTINGS.key(id)
         settings[setting_name] = value if setting_name
         pos += 6
       end
@@ -43,7 +43,7 @@ module HTWO
         0x41, 0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff
       ].pack("C*")
 
-      decoder = HTTP2::HPACK.new
+      decoder = HTWO::HPACK.new
       headers = decoder.decode(huffman_encoded)
 
       method = headers.assoc(":method").last
@@ -54,7 +54,7 @@ module HTWO
     end
 
     def test_server_enable_push_setting
-      assert_equal 0, HTTP2::DEFAULT_SETTINGS[:enable_push]
+      assert_equal 0, HTWO::DEFAULT_SETTINGS[:enable_push]
     end
   end
 end

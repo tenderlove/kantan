@@ -19,7 +19,7 @@ puts "-" * 60
 client_sock, server_sock = Socket.pair(:UNIX, :STREAM, 0)
 
 server_thread = Thread.new do
-  http2 = HTTP2::Server.new(server_sock)
+  http2 = HTWO::Server.new(server_sock)
   http2.on_stream do |stream|
     http2.send_headers(stream.id, [[":status", "200"]])
     http2.send_data(stream.id, "Response from Unix socket", end_stream: true)
@@ -29,7 +29,7 @@ end
 
 client_thread = Thread.new do
   sleep 0.1
-  http2 = HTTP2::Client.new(client_sock)
+  http2 = HTWO::Client.new(client_sock)
   http2.on_data { |stream, data| puts "  Received: #{data}" }
   http2.start
   http2.request([[":method", "GET"], [":path", "/"], [":scheme", "https"], [":authority", "test"]])
@@ -47,14 +47,14 @@ server_sock.close rescue nil
 # Example 2: TCP Socket
 puts "\n2. TCP Socket (standard network connection)"
 puts "-" * 60
-puts "  Server: HTTP2::Server.new(tcp_socket)"
-puts "  Client: HTTP2::Client.new(TCPSocket.new('host', port))"
+puts "  Server: HTWO::Server.new(tcp_socket)"
+puts "  Client: HTWO::Client.new(TCPSocket.new('host', port))"
 
 # Example 3: SSL/TLS Socket
 puts "\n3. SSL/TLS Socket (secure connection)"
 puts "-" * 60
-puts "  Server: HTTP2::Server.new(ssl_socket)"
-puts "  Client: HTTP2::Client.new(OpenSSL::SSL::SSLSocket.new(...))"
+puts "  Server: HTWO::Server.new(ssl_socket)"
+puts "  Client: HTWO::Client.new(OpenSSL::SSL::SSLSocket.new(...))"
 puts "  See tls_example.rb for full implementation"
 
 # Example 4: Pipe (for IPC)
@@ -67,7 +67,7 @@ reader.binmode
 
 fork_pid = fork do
   writer.close
-  http2 = HTTP2::Server.new(reader)
+  http2 = HTWO::Server.new(reader)
   http2.on_stream do |stream|
     http2.send_headers(stream.id, [[":status", "200"]])
     http2.send_data(stream.id, "Response from pipe", end_stream: true)
@@ -78,7 +78,7 @@ end
 
 reader.close
 
-http2_client = HTTP2::Client.new(writer)
+http2_client = HTWO::Client.new(writer)
 response_data = nil
 
 http2_client.on_data do |stream, data|
@@ -100,7 +100,7 @@ puts "\n5. Frame-level testing (using StringIO)"
 puts "-" * 60
 
 # Create a frame
-frame = HTTP2::Frame.new(
+frame = HTWO::Frame.new(
   type: :settings,
   flags: 0,
   stream_id: 0,
@@ -113,7 +113,7 @@ puts "  Frame encoded: #{binary.bytesize} bytes"
 
 # Decode from binary using StringIO
 io = StringIO.new(binary)
-decoded_frame = HTTP2::Frame.parse(io)
+decoded_frame = HTWO::Frame.parse(io)
 puts "  Frame decoded: type=#{decoded_frame.type}, stream_id=#{decoded_frame.stream_id}"
 
 puts "\n" + "=" * 60
