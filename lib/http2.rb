@@ -1,10 +1,6 @@
-#!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Pure Ruby HTTP/2 implementation
-# No external dependencies required
-
-require_relative 'http2/huffman'
+require "http2/huffman"
 
 module HTTP2
   # HTTP/2 Frame Types
@@ -72,7 +68,7 @@ module HTTP2
   }.freeze
 
   # Connection preface
-  CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+  CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b
 
   class Frame
     attr_accessor :length, :type, :flags, :stream_id, :payload
