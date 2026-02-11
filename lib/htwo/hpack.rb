@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "http2/huffman"
+require "htwo/huffman"
 
 module HTWO
   class DynamicTable
