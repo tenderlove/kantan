@@ -199,8 +199,11 @@ module HTWO
               remainder, pos = buffer.unpack("R^", offset: pos)
               len = 127 + remainder
             end
-            name = buffer.byteslice(pos, len)
-            name = Huffman.decode(name) if huffman
+            name = if huffman
+              Huffman.decode(buffer, pos, len)
+            else
+              buffer.byteslice(pos, len)
+            end
             pos += len
           else
             name = lookup(name_idx).first
@@ -214,8 +217,11 @@ module HTWO
             remainder, pos = buffer.unpack("R^", offset: pos)
             len = 127 + remainder
           end
-          value = buffer.byteslice(pos, len)
-          value = Huffman.decode(value) if huffman
+          value = if huffman
+            Huffman.decode(buffer, pos, len)
+          else
+            buffer.byteslice(pos, len)
+          end
           pos += len
 
           headers << [name, value]
@@ -244,8 +250,11 @@ module HTWO
               remainder, pos = buffer.unpack("R^", offset: pos)
               len = 127 + remainder
             end
-            name = buffer.byteslice(pos, len)
-            name = Huffman.decode(name) if huffman
+            name = if huffman
+              Huffman.decode(buffer, pos, len)
+            else
+              buffer.byteslice(pos, len)
+            end
             pos += len
           else
             name = lookup(name_idx).first
@@ -259,8 +268,11 @@ module HTWO
             remainder, pos = buffer.unpack("R^", offset: pos)
             len = 127 + remainder
           end
-          value = buffer.byteslice(pos, len)
-          value = Huffman.decode(value) if huffman
+          value = if huffman
+            Huffman.decode(buffer, pos, len)
+          else
+            buffer.byteslice(pos, len)
+          end
           pos += len
 
           headers << [name, value]

@@ -136,7 +136,7 @@ module HTWO
     # Build encoding lookup table: byte value -> [code, length]
     ENCODE_TABLE = Ractor.make_shareable(CODES[0, 256].map { |_sym, code, length| [code, length] })
 
-    def self.encode(str)
+    def self.encode str
       out = "".b
       bits = 0
       buf = 0
@@ -161,11 +161,14 @@ module HTWO
       out
     end
 
-    def self.decode(data)
+    def self.decode data, offset, length
       result = "".b
       pos = 0
+      finish = offset + length
 
-      data.each_byte do |byte|
+      while offset < finish
+        byte = data.getbyte(offset)
+        offset += 1
         8.times do |i|
           bit = (byte >> (7 - i)) & 1
           pos = DECODE_TABLE[pos + bit]
