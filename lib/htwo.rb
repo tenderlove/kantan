@@ -3,6 +3,7 @@
 require "socket"
 require "openssl"
 require "uri"
+require "htwo/hpack"
 #require "http2"
 
 module HTWO
@@ -73,10 +74,10 @@ module HTWO
       @io = io
 
       # Table used to encode values sent to the peer
-      @encoding_table = nil
+      @encoding_table = HPACK.new
 
       # Table used to decode values sent by the peer
-      @decoding_table = nil
+      @decoding_table = HPACK.new
 
       @peer_settings = [
         0,
@@ -98,19 +99,28 @@ module HTWO
 
       @next_stream_id = 1
 
-      @stream_map = {}
+      @port_to_stream_id = {}
+      @stream_id_to_port = {}
 
       @reader = Thread.new do
         header_buff = HEADER_BUFF.dup
 
         while true
+          begin
           str = io.readpartial(9, header_buff)
+          rescue IOError
+            break
+          end
           len_type, flags, stream_ident = str.unpack("NCN")
           len = len_type >> 8
           type = len_type & 0xFF
           stream_ident &= 0x7FFF_FFF # clear reserved bit
 
           case type
+          when 0x0 # data
+            handle_data io, len, flags, stream_ident
+          when 0x1 # headers
+            handle_headers io, len, flags, stream_ident
           when 0x4 # settings
             handle_settings io, len, flags, stream_ident
           when 0x6 # ping
@@ -131,10 +141,27 @@ module HTWO
     end
 
     def get port, path
-      stream_id = stream_id_for_port(port)
+      stream_id = open_stream(port)
+      headers = [
+        [":method", "GET"],
+        [":path", "/"],
+        [":scheme", "http"],
+        [":authority", "localhost:8443"],
+        ["priority", "u=3"],
+        ["accept", "*/*"],
+        ["accept-encoding", "gzip, deflate"],
+        ["user-agent", "htwo"],
+      ]
+
+      hpack = @encoding_table.encode headers
+
+      send_headers io, stream_id, hpack
     end
 
     def finish port
+      send_goaway io
+      io.flush
+      io.close
       @reader.join
     end
 
@@ -151,19 +178,39 @@ module HTWO
 
     private
 
-    def stream_id_for_port port
-      unless @stream_map.key?(port)
-        @stream_map[port] = @next_stream_id
+    def open_stream port
+      unless @port_to_stream_id.key?(port)
+        @port_to_stream_id[port] = @next_stream_id
+        @stream_id_to_port[@next_stream_id] = port
         @next_stream_id += 2
       end
 
-      @stream_map[port]
+      @port_to_stream_id[port]
+    end
+
+    def find_stream_id port
+      @port_to_stream_id.fetch port
+    end
+
+    def find_port stream_id
+      @stream_id_to_port.fetch stream_id
     end
 
     def send_ping io, data
       puts __method__
       io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
       io.write data
+    end
+
+    def send_headers io, ident, hpack
+      len = hpack.bytesize
+      len_type = (len << 8) | 0x1
+
+      flags = 0x04 | # END_HEADERS
+        0x01 # END_STREAM
+
+      io.write [len_type, flags, ident].pack("NCN")
+      io.write hpack
     end
 
     def send_settings io, settings
@@ -174,8 +221,29 @@ module HTWO
       end
     end
 
+    def send_goaway io
+      len = 8
+      len_type = (len << 8) | 0x7
+      flags = 0
+      ident = 0
+      last_stream_id = 0
+      error = 0 # no error
+      io.write [len_type, flags, ident, last_stream_id, error].pack("NCNNN")
+    end
+
     def send_settings_ack io
       io.write "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+    end
+
+    def handle_data io, len, flags, stream_id
+      port = find_port(stream_id)
+      port << io.read(len).freeze
+      port << nil if flags[0].positive?
+    end
+
+    def handle_headers io, len, flags, stream_id
+      port = find_port(stream_id)
+      port << @decoding_table.decode(io.read(len))
     end
 
     def handle_ping io, len, flags, stream_ident
@@ -264,7 +332,12 @@ module HTWO
 
     def get path
       @s << [:get, Ractor.current.default_port, path]
-      Ractor.receive
+      headers = Ractor.receive
+      body = "".b
+      while part = Ractor.receive
+        body << part
+      end
+      [headers, body]
     end
   end
 end
@@ -278,6 +351,6 @@ if $0 == __FILE__
   client = HTWO::Connection.new tcp
   client.connect
   p PING: client.ping
-  client.get "/"
+  p client.get "/"
   client.finish
 end
