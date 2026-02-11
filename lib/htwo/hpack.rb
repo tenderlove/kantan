@@ -69,6 +69,9 @@ module HTWO
       ["www-authenticate", ""]
     ])
 
+    # Headers whose values change frequently — don't add to dynamic table
+    NO_INDEX_NAMES = Set.new(%w[:path content-length etag location set-cookie]).freeze
+
     def initialize table_size = 4096
       @table_size = table_size
       @dynamic_table = []
@@ -78,26 +81,47 @@ module HTWO
     def encode headers
       out = "".b
       headers.each do |name, value|
-        index = STATIC_TABLE.index([name, value])
-        if index
-          # Indexed header field
-          [0x80 | (index + 1)].pack("C", buffer: out)
-        else
-          # Try to find name match
-          index = STATIC_TABLE.index { |n, _| n == name }
+        # Check static table for full match
+        idx = STATIC_TABLE.index([name, value])
+        if idx
+          encode_integer(out, idx + 1, 7, 0x80)
+          next
+        end
 
-          raise unless index
+        # Check dynamic table for full match
+        idx = @dynamic_table.index([name, value])
+        if idx
+          encode_integer(out, idx + STATIC_TABLE.length + 1, 7, 0x80)
+          next
+        end
 
-          # Incremental indexing
-          [0x40 | (index + 1)].pack("C", buffer: out)
+        # Name match — prefer static table (smaller indices)
+        name_idx = STATIC_TABLE.index { |n, _| n == name }
+        name_idx = name_idx + 1 if name_idx
+        unless name_idx
+          name_idx = @dynamic_table.index { |n, _| n == name }
+          name_idx = name_idx + STATIC_TABLE.length + 1 if name_idx
+        end
 
-          if value.bytesize >= 127
-            raise NotImplementedError
+        if NO_INDEX_NAMES.include?(name)
+          # Literal without indexing
+          if name_idx
+            encode_integer(out, name_idx, 4, 0x00)
           else
-            [value.bytesize].pack("C", buffer: out)
-            out << value
-            add_to_dynamic_table name, value
+            out << "\x00".b
+            encode_string(out, name)
           end
+          encode_string(out, value)
+        else
+          # Literal with incremental indexing
+          if name_idx
+            encode_integer(out, name_idx, 6, 0x40)
+          else
+            out << "\x40".b
+            encode_string(out, name)
+          end
+          encode_string(out, value)
+          add_to_dynamic_table name, value
         end
       end
       out
@@ -215,6 +239,39 @@ module HTWO
         STATIC_TABLE[idx - 1]
       else
         @dynamic_table[idx - STATIC_TABLE.length - 1]
+      end
+    end
+
+    def encode_integer(out, value, prefix_bits, pattern)
+      max = (1 << prefix_bits) - 1
+      if value < max
+        [pattern | value].pack("C", buffer: out)
+      else
+        [pattern | max].pack("C", buffer: out)
+        [value - max].pack("R", buffer: out)
+      end
+    end
+
+    def encode_string(out, str)
+      huffed = Huffman.encode(str)
+      if huffed.bytesize < str.bytesize
+        len = huffed.bytesize
+        if len < 127
+          [0x80 | len].pack("C", buffer: out)
+        else
+          [0xFF].pack("C", buffer: out)
+          [len - 127].pack("R", buffer: out)
+        end
+        out << huffed
+      else
+        len = str.bytesize
+        if len < 127
+          [len].pack("C", buffer: out)
+        else
+          [0x7F].pack("C", buffer: out)
+          [len - 127].pack("R", buffer: out)
+        end
+        out << str
       end
     end
 

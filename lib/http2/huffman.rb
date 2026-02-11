@@ -102,6 +102,34 @@ module HTWO
 
     DECODE_TREE = build_decode_tree.freeze
 
+    # Build encoding lookup table: byte value -> [code, length]
+    ENCODE_TABLE = CODES[0, 256].map { |_sym, code, length| [code, length] }.freeze
+
+    def self.encode(str)
+      out = String.new(encoding: Encoding::BINARY)
+      bits = 0
+      buf = 0
+
+      str.each_byte do |byte|
+        code, length = ENCODE_TABLE[byte]
+        buf = (buf << length) | code
+        bits += length
+
+        while bits >= 8
+          bits -= 8
+          out << ((buf >> bits) & 0xFF).chr
+        end
+      end
+
+      # Pad with EOS prefix (all 1s)
+      if bits > 0
+        buf = (buf << (8 - bits)) | ((1 << (8 - bits)) - 1)
+        out << (buf & 0xFF).chr
+      end
+
+      out
+    end
+
     def self.decode(data)
       result = String.new(encoding: Encoding::BINARY)
       node = DECODE_TREE

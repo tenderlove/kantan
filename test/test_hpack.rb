@@ -13,9 +13,15 @@ module HTWO
     }.compact.sort.each { |entry|
       define_method("test_#{File.basename(entry, ".json")}") do
         decoder = HTWO::HPACK.new
+        encoder = HTWO::HPACK.new
+        round_trip_decoder = HTWO::HPACK.new
         tests = JSON.load File.read entry
         tests["cases"].each do |x|
-          assert_equal x["headers"].map { _1.to_a.first }, decoder.decode([x["wire"]].pack("H*"))
+          headers = x["headers"].map { _1.to_a.first }
+          assert_equal headers, decoder.decode([x["wire"]].pack("H*"))
+          encoded = encoder.encode(headers)
+          assert_equal x["wire"].b, encoded.unpack("H*").first.b
+          assert_equal headers, round_trip_decoder.decode(encoded)
         end
       end
     }
@@ -38,20 +44,20 @@ module HTWO
       headers = [["content-language", "English"]]
       encoded = encoder.encode(headers)
 
-      assert_equal "[\aEnglish".b, encoded
+      assert_equal "\x5b\x86\xc1\x54\xd4\x19\x13\xff".b, encoded
       decoded = decoder.decode(encoded)
 
       assert_equal headers, decoded
     end
 
     # With indexing twice
-    def xtest_hpack_incremental_index
+    def test_hpack_incremental_index_reuse
       encoder = HTWO::HPACK.new
       decoder = HTWO::HPACK.new
       headers = [["content-language", "English"]]
       encoded = encoder.encode(headers)
 
-      assert_equal "[\aEnglish".b, encoded
+      assert_equal "\x5b\x86\xc1\x54\xd4\x19\x13\xff".b, encoded
       decoded = decoder.decode(encoded)
 
       assert_equal headers, decoded
