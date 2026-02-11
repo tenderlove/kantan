@@ -291,10 +291,10 @@ module HTWO
     kv_code = "case key\n" + m.map { |key, values|
       "when #{key.dump}" +
       if values.length == 1
-        " then value == #{values.keys.first.dump} ? #{values.values.first} : nil"
+        " then value == #{values.keys.first.dump} ? #{values.values.first + 1} : nil"
       else
         "\n  case value\n" +
-          values.map { |v, n| "  when #{v.dump} then #{n}" }.join("\n") +
+          values.map { |v, n| "  when #{v.dump} then #{n + 1}" }.join("\n") +
           "\n  else\n    nil\n  end"
       end
     }.join("\n") + "\nelse\nend"
@@ -302,23 +302,17 @@ module HTWO
     class_eval "def static_key_value_index key, value\n#{kv_code}\nend", __FILE__, __LINE__
 
     key_code = "case key\n" + m.map { |key, values|
-      "when #{key.dump} then #{values.values.first}"
+      "when #{key.dump} then #{values.values.first + 1}"
     }.join("\n") + "\nelse\nend"
 
     class_eval "def static_key_index key\n#{key_code}\nend", __FILE__, __LINE__
 
     def key_value_index key, value
-      idx = static_key_value_index key, value
-      return idx + 1 if idx
-
-      @dynamic_table.find(key, value)
+      static_key_value_index(key, value) || @dynamic_table.find(key, value)
     end
 
     def key_index key
-      idx = static_key_index key
-      return idx + 1 if idx
-
-      @dynamic_table.find_name(key)
+      static_key_index(key) || @dynamic_table.find_name(key)
     end
 
     def lookup idx
