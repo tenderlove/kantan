@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-require "socket"
-require "openssl"
-require "uri"
 require "htwo/hpack"
 #require "http2"
 
@@ -62,6 +59,20 @@ module HTWO
     end
   end
 
+  class Handler
+    def on_headers stream; end
+    def on_data stream, chunk; end
+    def on_request stream; end
+    def on_ping rtt; end
+    def on_close; end
+  end
+
+  Stream = Struct.new(:id, :headers, :data, :session) do
+    def respond headers, body: nil
+      session.send_response self, headers, body
+    end
+  end
+
   class Session
     HEADER_BUFF = ("\0".b * 9).freeze
     private_constant :HEADER_BUFF
@@ -70,8 +81,9 @@ module HTWO
 
     attr_reader :io
 
-    def initialize io
+    def initialize io, handler:
       @io = io
+      @handler = handler
 
       # Table used to encode values sent to the peer
       @encoding_table = HPACK.new
@@ -90,58 +102,15 @@ module HTWO
       ]
 
       @window_size = 65535
-
-      max_streams = Frames::Settings::DEFAULT[Frames::Settings::MAX_CONCURRENT_STREAMS]
-
-      @stream_ports = [[]] * (max_streams + 1)
-
-      @stream_freelist = max_streams.times.map { _1 + 1 }.reverse
-
       @next_stream_id = 1
-
-      @port_to_stream_id = {}
-      @stream_id_to_port = {}
-
-      @reader = Thread.new do
-        header_buff = HEADER_BUFF.dup
-
-        while true
-          begin
-          str = io.readpartial(9, header_buff)
-          rescue IOError
-            break
-          end
-          len_type, flags, stream_ident = str.unpack("NCN")
-          len = len_type >> 8
-          type = len_type & 0xFF
-          stream_ident &= 0x7FFF_FFF # clear reserved bit
-
-          case type
-          when 0x0 # data
-            handle_data io, len, flags, stream_ident
-          when 0x1 # headers
-            handle_headers io, len, flags, stream_ident
-          when 0x4 # settings
-            handle_settings io, len, flags, stream_ident
-          when 0x6 # ping
-            handle_ping io, len, flags, stream_ident
-          when 0x7 # goaway
-            handle_goaway io, len, flags, stream_ident
-            io.close
-            break
-          when 0x8 # window update
-            handle_window_update io, len, flags, stream_ident
-          else
-            raise "unknown type #{type}"
-          end
-        end
-
-        @stream_ports.each { |port_list| port_list.each { |port| port << nil if port } }
-      end
+      @streams = {}
     end
 
-    def get port, path
-      stream_id = open_stream(port)
+    def get path
+      stream_id = @next_stream_id
+      @next_stream_id += 2
+      @streams[stream_id] = Stream.new(stream_id, nil, nil, self)
+
       headers = [
         [":method", "GET"],
         [":path", "/"],
@@ -156,44 +125,93 @@ module HTWO
       hpack = @encoding_table.encode headers
 
       send_headers io, stream_id, hpack
+      stream_id
     end
 
-    def finish port
-      send_goaway io
+    def finish
+      send_goaway io, 0x0 # NO_ERROR
       io.flush
       io.close
       @reader.join
     end
 
-    def connect port
+    def connect
+      start_read_thread
       io.write CONNECTION_PREFACE
       send_settings io, nil
     end
 
-    def ping port
-      @stream_ports[0][Frames::PING] = port
+    def receive
+      preface = io.read CONNECTION_PREFACE.bytesize
+      if preface != CONNECTION_PREFACE
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return
+      end
+      send_settings io, nil
+      start_read_thread
+    end
+
+    def ping
       ts = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
       send_ping io, [ts].pack("Q>")
     end
 
     private
 
-    def open_stream port
-      unless @port_to_stream_id.key?(port)
-        @port_to_stream_id[port] = @next_stream_id
-        @stream_id_to_port[@next_stream_id] = port
-        @next_stream_id += 2
+    def start_read_thread
+      @reader = Thread.new { read_loop }
+    end
+
+    def read_loop
+      header_buff = HEADER_BUFF.dup
+
+      while true
+        begin
+          str = io.readpartial(9, header_buff)
+        rescue IOError, Errno::ECONNRESET
+          break
+        end
+        len_type, flags, stream_ident = str.unpack("NCN")
+        len = len_type >> 8
+        type = len_type & 0xFF
+        stream_ident &= 0x7FFF_FFFF # clear reserved bit
+
+        if len > 16384 && type != 0x4 # SETTINGS_MAX_FRAME_SIZE default
+          send_goaway io, 0x6 # FRAME_SIZE_ERROR
+          io.close
+          break
+        end
+
+        case type
+        when 0x0 # data
+          handle_data io, len, flags, stream_ident
+        when 0x1 # headers
+          break if handle_headers(io, len, flags, stream_ident) == :close
+        when 0x2 # priority
+          raise NotImplementedError
+        when 0x3 # RST_STREAM
+          raise NotImplementedError
+        when 0x4 # settings
+          handle_settings io, len, flags, stream_ident
+        when 0x5 # PUSH_PROMISE
+          raise NotImplementedError
+        when 0x6 # ping
+          handle_ping io, len, flags, stream_ident
+        when 0x7 # goaway
+          handle_goaway io, len, flags, stream_ident
+          io.close
+          break
+        when 0x8 # window update
+          handle_window_update io, len, flags, stream_ident
+        when 0x9 # CONTINUATION
+          raise NotImplementedError
+        else
+          io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
+        end
       end
 
-      @port_to_stream_id[port]
-    end
-
-    def find_stream_id port
-      @port_to_stream_id.fetch port
-    end
-
-    def find_port stream_id
-      @stream_id_to_port.fetch stream_id
+      @handler.on_close
     end
 
     def send_ping io, data
@@ -221,13 +239,37 @@ module HTWO
       end
     end
 
-    def send_goaway io
+    public
+
+    def send_response stream, headers, body
+      hpack = @encoding_table.encode headers
+      len = hpack.bytesize
+      len_type = (len << 8) | 0x1
+
+      flags = 0x04 # END_HEADERS
+      flags |= 0x01 unless body # END_STREAM if no body
+
+      io.write [len_type, flags, stream.id].pack("NCN")
+      io.write hpack
+
+      if body
+        body = body.b if body.encoding != Encoding::BINARY
+        len = body.bytesize
+        len_type = (len << 8) | 0x0
+        flags = 0x01 # END_STREAM
+        io.write [len_type, flags, stream.id].pack("NCN")
+        io.write body
+      end
+    end
+
+    private
+
+    def send_goaway io, error
       len = 8
       len_type = (len << 8) | 0x7
       flags = 0
       ident = 0
       last_stream_id = 0
-      error = 0 # no error
       io.write [len_type, flags, ident, last_stream_id, error].pack("NCNNN")
     end
 
@@ -236,27 +278,46 @@ module HTWO
     end
 
     def handle_data io, len, flags, stream_id
-      port = find_port(stream_id)
-      port << io.read(len).freeze
-      port << nil if flags[0].positive?
+      chunk = io.read(len)
+      stream = @streams[stream_id]
+      stream.data ||= "".b
+      stream.data << chunk
+      @handler.on_data stream, chunk
+      @handler.on_request stream if flags[0].positive?
     end
 
     def handle_headers io, len, flags, stream_id
-      port = find_port(stream_id)
-      port << @decoding_table.decode(io.read(len))
+      payload = io.read(len)
+      return unless payload
+      begin
+        headers = @decoding_table.decode payload
+      rescue CompressionError
+        send_goaway io, 0x9 # COMPRESSION_ERROR
+        io.close
+        return :close
+      end
+      stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self)
+      stream.headers = headers
+      @handler.on_headers stream
+      @handler.on_request stream if flags[0].positive?
     end
 
     def handle_ping io, len, flags, stream_ident
       raise NotImplementedError unless stream_ident.zero?
       raise NotImplementedError unless len == 8
 
+      flags &= 0x01
+
+      payload = io.read(8)
       if flags.zero?
-        raise NotImplementedError
+        # Peer PING: echo back with ACK flag
+        io.write "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
+        io.write payload
       else
-        payload = io.read(8)
+        # ACK of our PING: compute RTT
         sent_at = payload.unpack1("Q>")
         rtt_ns = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - sent_at
-        @stream_ports[0][Frames::PING] << rtt_ns
+        @handler.on_ping rtt_ns
       end
     end
 
@@ -298,18 +359,59 @@ module HTWO
     end
   end
 
+  class ClientHandler < Handler
+    def initialize
+      @ports = {}
+      @ping_port = nil
+    end
+
+    attr_writer :ping_port
+
+    def register stream_id, port
+      @ports[stream_id] = port
+    end
+
+    def on_headers stream
+      @ports[stream.id] << stream.headers
+    end
+
+    def on_data stream, chunk
+      @ports[stream.id] << chunk.freeze
+    end
+
+    def on_request stream
+      @ports[stream.id] << nil
+      @ports.delete stream.id
+    end
+
+    def on_ping rtt
+      @ping_port << rtt
+    end
+
+    def on_close
+      @ports.each_value { |port| port << nil }
+      @ports.clear
+    end
+  end
+
   class Connection
     def initialize io
       @s = Ractor.new(io) { |io|
-        session = Session.new(io)
+        handler = ClientHandler.new
+        session = Session.new(io, handler: handler)
         while true
           cmd, port, data = Ractor.receive
 
           case cmd
-          when :connect then session.connect(port)
-          when :ping then session.ping(port)
-          when :get then session.get(port, data)
-          when :finish then session.finish(port); break
+          when :connect then session.connect
+          when :receive then session.receive
+          when :ping
+            handler.ping_port = port
+            session.ping
+          when :get
+            stream_id = session.get(data)
+            handler.register(stream_id, port)
+          when :finish then session.finish; break
           else
           end
         end
@@ -318,6 +420,10 @@ module HTWO
 
     def connect
       @s << [:connect, Ractor.current.default_port]
+    end
+
+    def receive
+      @s << [:receive, Ractor.current.default_port]
     end
 
     def finish
@@ -343,6 +449,10 @@ module HTWO
 end
 
 if $0 == __FILE__
+  require "socket"
+  require "openssl"
+  require "uri"
+
   uri = URI.parse "https://localhost:8443"
 
   tcp = TCPSocket.new uri.host, uri.port
