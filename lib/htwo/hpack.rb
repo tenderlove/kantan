@@ -69,9 +69,6 @@ module HTWO
       ["www-authenticate", ""]
     ])
 
-    # Headers whose values change frequently — don't add to dynamic table
-    NO_INDEX_NAMES = Set.new(%w[:path content-length etag location set-cookie]).freeze
-
     def initialize table_size = 4096
       @table_size = table_size
       @dynamic_table = []
@@ -82,7 +79,7 @@ module HTWO
       out = "".b
       headers.each do |name, value|
         # Check static table for full match
-        idx = STATIC_TABLE.index([name, value])
+        idx = key_value_index(name, value)
         if idx
           encode_integer(out, idx + 1, 7, 0x80)
           next
@@ -91,19 +88,22 @@ module HTWO
         # Check dynamic table for full match
         idx = @dynamic_table.index([name, value])
         if idx
-          encode_integer(out, idx + STATIC_TABLE.length + 1, 7, 0x80)
+          encode_integer(out, idx + 62, 7, 0x80)
           next
         end
 
         # Name match — prefer static table (smaller indices)
-        name_idx = STATIC_TABLE.index { |n, _| n == name }
-        name_idx = name_idx + 1 if name_idx
-        unless name_idx
+        name_idx = key_index(name)
+        if name_idx
+          name_idx += 1
+        else
           name_idx = @dynamic_table.index { |n, _| n == name }
-          name_idx = name_idx + STATIC_TABLE.length + 1 if name_idx
+          name_idx = name_idx + 62 if name_idx
         end
 
-        if NO_INDEX_NAMES.include?(name)
+        case name
+          # Headers whose values change frequently — don't add to dynamic table
+        when ":path", "content-length", "etag", "location", "set-cookie"
           # Literal without indexing
           if name_idx
             encode_integer(out, name_idx, 4, 0x00)
@@ -234,11 +234,34 @@ module HTWO
 
     private
 
+    m = STATIC_TABLE.each_with_object({}).with_index do |((k, v), o), i|
+      (o[k] ||= {})[v] = i
+    end
+
+    kv_code = "case key\n" + m.map { |key, values|
+      "when #{key.dump}" +
+      if values.length == 1
+        " then value == #{values.keys.first.dump} ? #{values.values.first} : nil"
+      else
+        "\n  case value\n" +
+          values.map { |v, n| "  when #{v.dump} then #{n}" }.join("\n") +
+          "\n  else\n    nil\n  end"
+      end
+    }.join("\n") + "\nelse\nend"
+
+    class_eval "def key_value_index key, value\n#{kv_code}\nend", __FILE__, __LINE__
+
+    key_code = "case key\n" + m.map { |key, values|
+      "when #{key.dump} then #{values.values.first}"
+    }.join("\n") + "\nelse\nend"
+
+    class_eval "def key_index key\n#{key_code}\nend", __FILE__, __LINE__
+
     def lookup idx
-      if idx <= STATIC_TABLE.length
+      if idx < 62 # STATIC_TABLE.length + 1
         STATIC_TABLE[idx - 1]
       else
-        @dynamic_table[idx - STATIC_TABLE.length - 1]
+        @dynamic_table[idx - 62]
       end
     end
 
@@ -247,8 +270,7 @@ module HTWO
       if value < max
         [pattern | value].pack("C", buffer: out)
       else
-        [pattern | max].pack("C", buffer: out)
-        [value - max].pack("R", buffer: out)
+        [pattern | max, value - max].pack("CR", buffer: out)
       end
     end
 
@@ -259,8 +281,7 @@ module HTWO
         if len < 127
           [0x80 | len].pack("C", buffer: out)
         else
-          [0xFF].pack("C", buffer: out)
-          [len - 127].pack("R", buffer: out)
+          [0xFF, len - 127].pack("CR", buffer: out)
         end
         out << huffed
       else
@@ -268,8 +289,7 @@ module HTWO
         if len < 127
           [len].pack("C", buffer: out)
         else
-          [0x7F].pack("C", buffer: out)
-          [len - 127].pack("R", buffer: out)
+          [0x7F, len - 127].pack("CR", buffer: out)
         end
         out << str
       end
