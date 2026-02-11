@@ -3,6 +3,64 @@
 require "http2/huffman"
 
 module HTWO
+  class DynamicTable
+    def initialize max_size
+      @entries = []
+      @seqs = []
+      @size = 0
+      @max_size = max_size
+      @seq = 0
+      @full_index = {}
+      @name_index = {}
+    end
+
+    def add name, value
+      @entries.unshift([name, value])
+      @seqs.unshift(@seq)
+      (@full_index[name] ||= {})[value] = @seq
+      @name_index[name] = @seq
+      @seq += 1
+      @size += name.bytesize + value.bytesize + 32
+      evict
+    end
+
+    def find name, value
+      seq_num = @full_index.dig(name, value)
+      return unless seq_num
+      62 + (@seq - 1 - seq_num)
+    end
+
+    def find_name name
+      seq_num = @name_index[name]
+      return unless seq_num
+      62 + (@seq - 1 - seq_num)
+    end
+
+    def lookup idx
+      @entries[idx - 62]
+    end
+
+    def resize new_max
+      @max_size = new_max
+      evict
+    end
+
+    private
+
+    def evict
+      while @size > @max_size && !@entries.empty?
+        evicted_name, evicted_value = @entries.pop
+        evicted_seq = @seqs.pop
+        @size -= evicted_name.bytesize + evicted_value.bytesize + 32
+        if (inner = @full_index[evicted_name]) && inner[evicted_value] == evicted_seq
+          inner.delete(evicted_value)
+          @full_index.delete(evicted_name) if inner.empty?
+        end
+        @name_index.delete(evicted_name) if @name_index[evicted_name] == evicted_seq
+      end
+    end
+  end
+
   class HPACK
     # Static table as defined in RFC 7541
     STATIC_TABLE = Ractor.make_shareable([
@@ -70,36 +128,20 @@ module HTWO
     ])
 
     def initialize table_size = 4096
-      @table_size = table_size
-      @dynamic_table = []
-      @dynamic_table_size = 0
+      @dynamic_table = DynamicTable.new(table_size)
     end
 
     def encode headers
       out = "".b
       headers.each do |name, value|
-        # Check static table for full match
         idx = key_value_index(name, value)
         if idx
-          encode_integer(out, idx + 1, 7, 0x80)
-          next
-        end
-
-        # Check dynamic table for full match
-        idx = @dynamic_table.index([name, value])
-        if idx
-          encode_integer(out, idx + 62, 7, 0x80)
+          encode_integer(out, idx, 7, 0x80)
           next
         end
 
         # Name match — prefer static table (smaller indices)
         name_idx = key_index(name)
-        if name_idx
-          name_idx += 1
-        else
-          name_idx = @dynamic_table.index { |n, _| n == name }
-          name_idx = name_idx + 62 if name_idx
-        end
 
         case name
           # Headers whose values change frequently — don't add to dynamic table
@@ -121,7 +163,7 @@ module HTWO
             encode_string(out, name)
           end
           encode_string(out, value)
-          add_to_dynamic_table name, value
+          @dynamic_table.add(name, value)
         end
       end
       out
@@ -177,18 +219,14 @@ module HTWO
           pos += len
 
           headers << [name, value]
-          add_to_dynamic_table name, value
+          @dynamic_table.add(name, value)
         elsif byte[5].positive?  # Dynamic table size update
           new_size = byte & 0x1F
           if new_size == 31
             remainder, pos = buffer.unpack("R^", offset: pos)
             new_size = 31 + remainder
           end
-          @table_size = new_size
-          while @dynamic_table_size > @table_size && !@dynamic_table.empty?
-            evicted = @dynamic_table.pop
-            @dynamic_table_size -= evicted[0].bytesize + evicted[1].bytesize + 32
-          end
+          @dynamic_table.resize(new_size)
         else
           never_indexed = byte & 0xF0 == 0x10
           name_idx = byte & 0x0F
@@ -249,23 +287,37 @@ module HTWO
       end
     }.join("\n") + "\nelse\nend"
 
-    class_eval "def key_value_index key, value\n#{kv_code}\nend", __FILE__, __LINE__
+    class_eval "def static_key_value_index key, value\n#{kv_code}\nend", __FILE__, __LINE__
 
     key_code = "case key\n" + m.map { |key, values|
       "when #{key.dump} then #{values.values.first}"
     }.join("\n") + "\nelse\nend"
 
-    class_eval "def key_index key\n#{key_code}\nend", __FILE__, __LINE__
+    class_eval "def static_key_index key\n#{key_code}\nend", __FILE__, __LINE__
+
+    def key_value_index key, value
+      idx = static_key_value_index key, value
+      return idx + 1 if idx
+
+      @dynamic_table.find(key, value)
+    end
+
+    def key_index key
+      idx = static_key_index key
+      return idx + 1 if idx
+
+      @dynamic_table.find_name(key)
+    end
 
     def lookup idx
       if idx < 62 # STATIC_TABLE.length + 1
         STATIC_TABLE[idx - 1]
       else
-        @dynamic_table[idx - 62]
+        @dynamic_table.lookup(idx)
       end
     end
 
-    def encode_integer(out, value, prefix_bits, pattern)
+    def encode_integer out, value, prefix_bits, pattern
       max = (1 << prefix_bits) - 1
       if value < max
         [pattern | value].pack("C", buffer: out)
@@ -274,7 +326,7 @@ module HTWO
       end
     end
 
-    def encode_string(out, str)
+    def encode_string out, str
       huffed = Huffman.encode(str)
       if huffed.bytesize < str.bytesize
         len = huffed.bytesize
@@ -292,18 +344,6 @@ module HTWO
           [0x7F, len - 127].pack("CR", buffer: out)
         end
         out << str
-      end
-    end
-
-    def add_to_dynamic_table name, value
-      entry_size = name.bytesize + value.bytesize + 32
-      @dynamic_table.unshift([name, value])
-      @dynamic_table_size += entry_size
-
-      # Evict entries if over size limit
-      while @dynamic_table_size > @table_size && !@dynamic_table.empty?
-        evicted = @dynamic_table.pop
-        @dynamic_table_size -= evicted[0].bytesize + evicted[1].bytesize + 32
       end
     end
   end
