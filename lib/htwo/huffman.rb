@@ -7,7 +7,7 @@ module HTWO
     # This is a simplified implementation using a lookup approach
 
     # Huffman codes from RFC 7541 - [symbol, code_bits, code_length]
-    CODES = [
+    CODES = Ractor.make_shareable([
       [0, 0x1ff8, 13], [1, 0x7fffd8, 23], [2, 0xfffffe2, 28], [3, 0xfffffe3, 28],
       [4, 0xfffffe4, 28], [5, 0xfffffe5, 28], [6, 0xfffffe6, 28], [7, 0xfffffe7, 28],
       [8, 0xfffffe8, 28], [9, 0xffffea, 24], [10, 0x3ffffffc, 30], [11, 0xfffffe9, 28],
@@ -73,40 +73,71 @@ module HTWO
       [248, 0x7ffffeb, 27], [249, 0xffffffe, 28], [250, 0x7ffffec, 27], [251, 0x7ffffed, 27],
       [252, 0x7ffffee, 27], [253, 0x7ffffef, 27], [254, 0x7fffff0, 27], [255, 0x3ffffee, 26],
       [256, 0x3fffffff, 30] # EOS
-    ].freeze
+    ])
 
-    # Build decoding tree for efficient lookup
-    def self.build_decode_tree
-      root = {}
+    # Build flat decoding table for efficient lookup.
+    # Each internal node occupies 2 consecutive slots [bit0, bit1].
+    # Values >= 0 are offsets to child nodes; values < 0 are leaves
+    # where the symbol is -(value + 1).
+    def self.build_decode_table
+      # First build nested tree
+      root = [nil, nil]
 
       CODES.each do |symbol, code, length|
         node = root
 
-        # Walk through bits
         (length - 1).downto(0) do |i|
           bit = (code >> i) & 1
 
           if i == 0
-            # Leaf node
             node[bit] = symbol
           else
-            # Internal node
-            node[bit] ||= {}
+            node[bit] ||= [nil, nil]
             node = node[bit]
           end
         end
       end
 
-      root
+      # Count internal nodes via BFS
+      node_count = 0
+      queue = [root]
+      while (n = queue.shift)
+        node_count += 1
+        2.times { |b| queue << n[b] if n[b].is_a?(Array) }
+      end
+
+      # Allocate flat table and fill via BFS
+      table = Array.new(node_count * 2)
+      offsets = { root.object_id => 0 }
+      next_offset = 2
+      queue = [root]
+
+      while (n = queue.shift)
+        base = offsets[n.object_id]
+        2.times do |b|
+          child = n[b]
+          if child.is_a?(Array)
+            offsets[child.object_id] = next_offset
+            table[base + b] = next_offset
+            next_offset += 2
+            queue << child
+          else
+            # Leaf: encode symbol as -(symbol + 1)
+            table[base + b] = -(child + 1)
+          end
+        end
+      end
+
+      table
     end
 
-    DECODE_TREE = build_decode_tree.freeze
+    DECODE_TABLE = Ractor.make_shareable(build_decode_table)
 
     # Build encoding lookup table: byte value -> [code, length]
-    ENCODE_TABLE = CODES[0, 256].map { |_sym, code, length| [code, length] }.freeze
+    ENCODE_TABLE = Ractor.make_shareable(CODES[0, 256].map { |_sym, code, length| [code, length] })
 
     def self.encode(str)
-      out = String.new(encoding: Encoding::BINARY)
+      out = "".b
       bits = 0
       buf = 0
 
@@ -117,43 +148,35 @@ module HTWO
 
         while bits >= 8
           bits -= 8
-          out << ((buf >> bits) & 0xFF).chr
+          out << ((buf >> bits) & 0xFF)
         end
       end
 
       # Pad with EOS prefix (all 1s)
       if bits > 0
         buf = (buf << (8 - bits)) | ((1 << (8 - bits)) - 1)
-        out << (buf & 0xFF).chr
+        out << (buf & 0xFF)
       end
 
       out
     end
 
     def self.decode(data)
-      result = String.new(encoding: Encoding::BINARY)
-      node = DECODE_TREE
+      result = "".b
+      pos = 0
 
       data.each_byte do |byte|
         8.times do |i|
           bit = (byte >> (7 - i)) & 1
-          node = node[bit]
+          pos = DECODE_TABLE[pos + bit]
 
-          if node.is_a?(Integer)
-            # Found a symbol
-            return result if node == 256  # EOS
-            result << node.chr
-            node = DECODE_TREE
-          elsif node.nil?
-            # Invalid code
-            raise "Invalid Huffman code"
+          if pos < 0
+            sym = -pos - 1
+            return result if sym == 256  # EOS
+            result << sym
+            pos = 0
           end
         end
-      end
-
-      # Check that we ended at EOS or with padding
-      unless node == DECODE_TREE || (node.is_a?(Hash) && node.values.all? { |v| v == 256 })
-        # Could be valid padding (all 1s), which is OK
       end
 
       result
