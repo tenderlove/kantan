@@ -111,51 +111,62 @@ module HTWO
         byte = buffer.getbyte(pos)
         pos += 1
         if byte[7].positive?
-          headers << STATIC_TABLE[(byte & 0x7F) - 1]
+          headers << lookup(byte & 0x7F)
         elsif byte[6].positive?
-          name = STATIC_TABLE[(byte & 0x3F) - 1].first
+          name_idx = byte & 0x3F
 
-          len = buffer.getbyte(pos)
-
-          huffman = len[7].positive?
-
-          len &= 0x7F
-
-          if len == 127
-            raise NotImplementedError
+          if name_idx == 0
+            len = buffer.getbyte(pos)
+            huffman = len[7].positive?
+            len &= 0x7F
+            raise NotImplementedError if len == 127
+            name = buffer.byteslice(pos + 1, len)
+            name = Huffman.decode(name) if huffman
+            pos += len + 1
+          else
+            name = lookup(name_idx).first
           end
 
-          value = buffer.byteslice(pos + 1, len & 0x7F)
+          len = buffer.getbyte(pos)
+          huffman = len[7].positive?
+          len &= 0x7F
+          raise NotImplementedError if len == 127
+          value = buffer.byteslice(pos + 1, len)
           value = Huffman.decode(value) if huffman
-
-          headers << [name, value]
           pos += len + 1
 
+          headers << [name, value]
           add_to_dynamic_table name, value
         elsif byte[5].positive?  # Dynamic table size update
           raise NotImplementedError
         else
-          name = if byte & 0xF0 == 0
-            STATIC_TABLE[(byte & 0x3F) - 1].first
+          name_idx = if byte & 0xF0 == 0
+            byte & 0x0F
           else
             raise NotImplementedError
           end
 
-          len = buffer.getbyte(pos)
-
-          huffman = len[7].positive?
-
-          len &= 0x7F
-
-          if len == 127
-            raise NotImplementedError
+          if name_idx == 0
+            len = buffer.getbyte(pos)
+            huffman = len[7].positive?
+            len &= 0x7F
+            raise NotImplementedError if len == 127
+            name = buffer.byteslice(pos + 1, len)
+            name = Huffman.decode(name) if huffman
+            pos += len + 1
+          else
+            name = lookup(name_idx).first
           end
 
-          value = buffer.byteslice(pos + 1, len & 0x7F)
+          len = buffer.getbyte(pos)
+          huffman = len[7].positive?
+          len &= 0x7F
+          raise NotImplementedError if len == 127
+          value = buffer.byteslice(pos + 1, len)
           value = Huffman.decode(value) if huffman
+          pos += len + 1
 
           headers << [name, value]
-          pos += len + 1
         end
       end
 
@@ -163,6 +174,14 @@ module HTWO
     end
 
     private
+
+    def lookup idx
+      if idx <= STATIC_TABLE.length
+        STATIC_TABLE[idx - 1]
+      else
+        @dynamic_table[idx - STATIC_TABLE.length - 1]
+      end
+    end
 
     def add_to_dynamic_table name, value
       entry_size = name.bytesize + value.bytesize + 32

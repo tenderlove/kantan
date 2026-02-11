@@ -6,15 +6,19 @@ require "json"
 
 module HTWO
   class TestHPACK < Minitest::Test
-    json = File.join File.dirname(__FILE__), "fixtures/hpack-test-case/nghttp2/story_00.json"
-    tests = JSON.load File.read json
-    define_method("test_story_00") do
-      decoder = HTWO::HPACK.new
-
-      tests["cases"].each do |x|
-        assert_equal x["headers"].map { _1.to_a.first }, decoder.decode([x["wire"]].pack("H*"))
+    BASE = File.expand_path File.join(File.dirname(__FILE__), "fixtures/hpack-test-case/nghttp2/")
+    Dir.entries(BASE).map { |entry|
+      next if File.directory?(File.join(BASE, entry))
+      File.join(BASE, entry)
+    }.compact.sort.each { |entry|
+      define_method("test_#{File.basename(entry, ".json")}") do
+        decoder = HTWO::HPACK.new
+        tests = JSON.load File.read entry
+        tests["cases"].each do |x|
+          assert_equal x["headers"].map { _1.to_a.first }, decoder.decode([x["wire"]].pack("H*"))
+        end
       end
-    end
+    }
 
     def test_hpack_encoding_decoding
       encoder = HTWO::HPACK.new
