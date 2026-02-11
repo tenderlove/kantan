@@ -111,18 +111,31 @@ module HTWO
         byte = buffer.getbyte(pos)
         pos += 1
         if byte[7].positive?
-          headers << lookup(byte & 0x7F)
+          idx = byte & 0x7F
+          if idx == 127
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            idx = 127 + remainder
+          end
+          headers << lookup(idx)
         elsif byte[6].positive?
           name_idx = byte & 0x3F
+          if name_idx == 63
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            name_idx = 63 + remainder
+          end
 
           if name_idx == 0
             len = buffer.getbyte(pos)
             huffman = len[7].positive?
             len &= 0x7F
-            raise NotImplementedError if len == 127
-            name = buffer.byteslice(pos + 1, len)
+            pos += 1
+            if len == 127
+              remainder, pos = buffer.unpack("R^", offset: pos)
+              len = 127 + remainder
+            end
+            name = buffer.byteslice(pos, len)
             name = Huffman.decode(name) if huffman
-            pos += len + 1
+            pos += len
           else
             name = lookup(name_idx).first
           end
@@ -130,30 +143,48 @@ module HTWO
           len = buffer.getbyte(pos)
           huffman = len[7].positive?
           len &= 0x7F
-          raise NotImplementedError if len == 127
-          value = buffer.byteslice(pos + 1, len)
+          pos += 1
+          if len == 127
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            len = 127 + remainder
+          end
+          value = buffer.byteslice(pos, len)
           value = Huffman.decode(value) if huffman
-          pos += len + 1
+          pos += len
 
           headers << [name, value]
           add_to_dynamic_table name, value
         elsif byte[5].positive?  # Dynamic table size update
-          raise NotImplementedError
+          new_size = byte & 0x1F
+          if new_size == 31
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            new_size = 31 + remainder
+          end
+          @table_size = new_size
+          while @dynamic_table_size > @table_size && !@dynamic_table.empty?
+            evicted = @dynamic_table.pop
+            @dynamic_table_size -= evicted[0].bytesize + evicted[1].bytesize + 32
+          end
         else
-          name_idx = if byte & 0xF0 == 0
-            byte & 0x0F
-          else
-            raise NotImplementedError
+          never_indexed = byte & 0xF0 == 0x10
+          name_idx = byte & 0x0F
+          if name_idx == 15
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            name_idx = 15 + remainder
           end
 
           if name_idx == 0
             len = buffer.getbyte(pos)
             huffman = len[7].positive?
             len &= 0x7F
-            raise NotImplementedError if len == 127
-            name = buffer.byteslice(pos + 1, len)
+            pos += 1
+            if len == 127
+              remainder, pos = buffer.unpack("R^", offset: pos)
+              len = 127 + remainder
+            end
+            name = buffer.byteslice(pos, len)
             name = Huffman.decode(name) if huffman
-            pos += len + 1
+            pos += len
           else
             name = lookup(name_idx).first
           end
@@ -161,10 +192,14 @@ module HTWO
           len = buffer.getbyte(pos)
           huffman = len[7].positive?
           len &= 0x7F
-          raise NotImplementedError if len == 127
-          value = buffer.byteslice(pos + 1, len)
+          pos += 1
+          if len == 127
+            remainder, pos = buffer.unpack("R^", offset: pos)
+            len = 127 + remainder
+          end
+          value = buffer.byteslice(pos, len)
           value = Huffman.decode(value) if huffman
-          pos += len + 1
+          pos += len
 
           headers << [name, value]
         end
