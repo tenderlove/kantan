@@ -1,4 +1,5 @@
-# frozen_string_literal: true
+# encoding: ascii-8bit
+# frozen_string_literal: false
 
 # Huffman coding for HPACK (RFC 7541 Appendix B)
 module HTWO
@@ -137,7 +138,7 @@ module HTWO
     ENCODE_TABLE = Ractor.make_shareable(CODES[0, 256].map { |_sym, code, length| [code, length] })
 
     def self.encode str
-      out = "".b
+      out = ""
       bits = 0
       buf = 0
 
@@ -162,14 +163,15 @@ module HTWO
     end
 
     def self.decode data, offset, length
-      result = "".b
+      result = ""
       pos = 0
       finish = offset + length
 
       while offset < finish
         byte = data.getbyte(offset)
         offset += 1
-        8.times do |i|
+        i = 0
+        while i < 8
           bit = (byte >> (7 - i)) & 1
           pos = DECODE_TABLE[pos + bit]
 
@@ -179,6 +181,7 @@ module HTWO
             result << sym
             pos = 0
           end
+          i += 1
         end
       end
 
