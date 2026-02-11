@@ -3,65 +3,65 @@
 require "htwo/huffman"
 
 module HTWO
-  class DynamicTable
-    def initialize max_size
-      @entries = []
-      @seqs = []
-      @size = 0
-      @max_size = max_size
-      @seq = 0
-      @full_index = {}
-      @name_index = {}
-    end
+  class HPACK
+    class DynamicTable # :nodoc:
+      def initialize max_size
+        @entries = []
+        @seqs = []
+        @size = 0
+        @max_size = max_size
+        @seq = 0
+        @full_index = {}
+        @name_index = {}
+      end
 
-    def add name, value
-      @entries.unshift([name, value])
-      @seqs.unshift(@seq)
-      (@full_index[name] ||= {})[value] = @seq
-      @name_index[name] = @seq
-      @seq += 1
-      @size += name.bytesize + value.bytesize + 32
-      evict
-    end
+      def add name, value
+        @entries.unshift([name, value])
+        @seqs.unshift(@seq)
+        (@full_index[name] ||= {})[value] = @seq
+        @name_index[name] = @seq
+        @seq += 1
+        @size += name.bytesize + value.bytesize + 32
+        evict
+      end
 
-    def find name, value
-      seq_num = @full_index.dig(name, value)
-      return unless seq_num
-      62 + (@seq - 1 - seq_num)
-    end
+      def find name, value
+        seq_num = @full_index.dig(name, value)
+        return unless seq_num
+        62 + (@seq - 1 - seq_num)
+      end
 
-    def find_name name
-      seq_num = @name_index[name]
-      return unless seq_num
-      62 + (@seq - 1 - seq_num)
-    end
+      def find_name name
+        seq_num = @name_index[name]
+        return unless seq_num
+        62 + (@seq - 1 - seq_num)
+      end
 
-    def lookup idx
-      @entries[idx - 62]
-    end
+      def lookup idx
+        @entries[idx - 62]
+      end
 
-    def resize new_max
-      @max_size = new_max
-      evict
-    end
+      def resize new_max
+        @max_size = new_max
+        evict
+      end
 
-    private
+      private
 
-    def evict
-      while @size > @max_size && !@entries.empty?
-        evicted_name, evicted_value = @entries.pop
-        evicted_seq = @seqs.pop
-        @size -= evicted_name.bytesize + evicted_value.bytesize + 32
-        if (inner = @full_index[evicted_name]) && inner[evicted_value] == evicted_seq
-          inner.delete(evicted_value)
-          @full_index.delete(evicted_name) if inner.empty?
+      def evict
+        while @size > @max_size && !@entries.empty?
+          evicted_name, evicted_value = @entries.pop
+          evicted_seq = @seqs.pop
+          @size -= evicted_name.bytesize + evicted_value.bytesize + 32
+          if (inner = @full_index[evicted_name]) && inner[evicted_value] == evicted_seq
+            inner.delete(evicted_value)
+            @full_index.delete(evicted_name) if inner.empty?
+          end
+          @name_index.delete(evicted_name) if @name_index[evicted_name] == evicted_seq
         end
-        @name_index.delete(evicted_name) if @name_index[evicted_name] == evicted_seq
       end
     end
-  end
 
-  class HPACK
     # Static table as defined in RFC 7541
     STATIC_TABLE = Ractor.make_shareable([
       [":authority", ""],
@@ -150,7 +150,7 @@ module HTWO
           if name_idx
             encode_integer(out, name_idx, 4, 0x00)
           else
-            out << "\x00".b
+            out << 0x00
             encode_string(out, name)
           end
           encode_string(out, value)
@@ -159,7 +159,7 @@ module HTWO
           if name_idx
             encode_integer(out, name_idx, 6, 0x40)
           else
-            out << "\x40".b
+            out << 0x40
             encode_string(out, name)
           end
           encode_string(out, value)
@@ -190,7 +190,7 @@ module HTWO
             name_idx = 63 + remainder
           end
 
-          if name_idx == 0
+          if name_idx.zero?
             len = buffer.getbyte(pos)
             huffman = len[7].positive?
             len &= 0x7F
