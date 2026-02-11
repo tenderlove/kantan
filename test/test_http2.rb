@@ -1,9 +1,8 @@
-#!/usr/bin/env ruby
 # frozen_string_literal: true
 
 require 'minitest/autorun'
 require 'socket'
-require_relative '../lib/http2'
+require "htwo/hpack"
 
 class TestHTTP2 < Minitest::Test
   def test_hpack_encoding_decoding

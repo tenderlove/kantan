@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "http2/huffman"
+
 module HTWO
   class HPACK
     # Static table as defined in RFC 7541
@@ -94,7 +96,7 @@ module HTWO
           else
             [value.bytesize].pack("C", buffer: out)
             out << value
-            #add_to_dynamic_table name, value
+            add_to_dynamic_table name, value
           end
         end
       end
@@ -112,18 +114,66 @@ module HTWO
           headers << STATIC_TABLE[(byte & 0x7F) - 1]
         elsif byte[6].positive?
           name = STATIC_TABLE[(byte & 0x3F) - 1].first
+
           len = buffer.getbyte(pos)
-          value = buffer.byteslice(pos + 1, len)
+
+          huffman = len[7].positive?
+
+          len &= 0x7F
+
+          if len == 127
+            raise NotImplementedError
+          end
+
+          value = buffer.byteslice(pos + 1, len & 0x7F)
+          value = Huffman.decode(value) if huffman
+
           headers << [name, value]
           pos += len + 1
 
-          #add_to_dynamic_table
-        else
+          add_to_dynamic_table name, value
+        elsif byte[5].positive?  # Dynamic table size update
           raise NotImplementedError
+        else
+          name = if byte & 0xF0 == 0
+            STATIC_TABLE[(byte & 0x3F) - 1].first
+          else
+            raise NotImplementedError
+          end
+
+          len = buffer.getbyte(pos)
+
+          huffman = len[7].positive?
+
+          len &= 0x7F
+
+          if len == 127
+            raise NotImplementedError
+          end
+
+          value = buffer.byteslice(pos + 1, len & 0x7F)
+          value = Huffman.decode(value) if huffman
+
+          headers << [name, value]
+          pos += len + 1
         end
       end
 
       headers
+    end
+
+    private
+
+    def add_to_dynamic_table name, value
+      entry_size = name.bytesize + value.bytesize + 32
+      @dynamic_table.unshift([name, value])
+      @dynamic_table_size += entry_size
+
+      # Evict entries if over size limit
+      while @dynamic_table_size > @table_size && !@dynamic_table.empty?
+        evicted = @dynamic_table.pop
+        @dynamic_table_size -= evicted[0].bytesize + evicted[1].bytesize + 32
+      end
     end
   end
 end

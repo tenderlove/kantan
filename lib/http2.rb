@@ -18,7 +18,7 @@ module HTWO
   }.freeze
 
   # Frame type lookup
-  FRAME_TYPE_NAMES = FRAME_TYPES.invert.freeze
+  FRAME_TYPE_NAMES = FRAME_TYPES.to_a.sort_by(&:last).map(&:first)
 
   # Frame Flags
   FLAGS = {
@@ -269,7 +269,7 @@ module HTWO
           update_table_size(size)
         else
           # Literal header field without indexing or never indexed
-          indexed = (byte & 0b00010000) != 0
+          indexed = (byte & 0b0001_0000) != 0
           index, consumed = decode_integer(data, pos, 4)
           pos += consumed
 

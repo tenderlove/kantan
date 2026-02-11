@@ -17,6 +17,7 @@ module HTWO
       :PING,
       :GOAWAY,
       :WINDOW_UPDATE,
+      :CONTINUATION,
     ]
 
     NAMES.each_with_index { next unless _1; const_set(_1, _2) }
@@ -30,9 +31,33 @@ module HTWO
         :INITIAL_WINDOW_SIZE,
         :MAX_FRAME_SIZE,
         :MAX_HEADER_LIST_SIZE,
-      ]
+      ].freeze
 
       NAMES.each_with_index { next unless _1; const_set(_1, _2) }
+
+      DEFAULT = [
+        nil,
+        nil, # default is 4096
+        nil, # don't specify push promise
+        100, # max concurrent streams
+        65535, # initial window size
+      ].freeze
+
+      def self.encode stream_id, settings
+        settings = settings.each_with_index.select { |v, _| v }
+        bytesize = settings.length * 6
+        type = 0x4
+
+        [
+          (bytesize << 8) | type,
+          0,
+          stream_id
+        ].pack("NCN") + settings.map { |val, i|
+          [i, val].pack("nN")
+        }.join
+      end
+
+      DEFAULT_ENCODED = encode(0, DEFAULT).freeze
     end
   end
 
@@ -65,7 +90,15 @@ module HTWO
 
       @window_size = 65535
 
-      @stream_ports = [[]]
+      max_streams = Frames::Settings::DEFAULT[Frames::Settings::MAX_CONCURRENT_STREAMS]
+
+      @stream_ports = [[]] * (max_streams + 1)
+
+      @stream_freelist = max_streams.times.map { _1 + 1 }.reverse
+
+      @next_stream_id = 1
+
+      @stream_map = {}
 
       @reader = Thread.new do
         header_buff = HEADER_BUFF.dup
@@ -97,6 +130,10 @@ module HTWO
       end
     end
 
+    def get port, path
+      stream_id = stream_id_for_port(port)
+    end
+
     def finish port
       @reader.join
     end
@@ -114,6 +151,15 @@ module HTWO
 
     private
 
+    def stream_id_for_port port
+      unless @stream_map.key?(port)
+        @stream_map[port] = @next_stream_id
+        @next_stream_id += 2
+      end
+
+      @stream_map[port]
+    end
+
     def send_ping io, data
       puts __method__
       io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
@@ -124,7 +170,7 @@ module HTWO
       if settings
         raise NotImplementedError
       else
-        io.write "\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+        io.write Frames::Settings::DEFAULT_ENCODED
       end
     end
 
@@ -189,11 +235,12 @@ module HTWO
       @s = Ractor.new(io) { |io|
         session = Session.new(io)
         while true
-          cmd, port = Ractor.receive
+          cmd, port, data = Ractor.receive
 
           case cmd
           when :connect then session.connect(port)
           when :ping then session.ping(port)
+          when :get then session.get(port, data)
           when :finish then session.finish(port); break
           else
           end
@@ -214,6 +261,11 @@ module HTWO
       @s << [:ping, Ractor.current.default_port]
       Ractor.receive
     end
+
+    def get path
+      @s << [:get, Ractor.current.default_port, path]
+      Ractor.receive
+    end
   end
 end
 
@@ -225,9 +277,7 @@ if $0 == __FILE__
 
   client = HTWO::Connection.new tcp
   client.connect
-  5.times do
-    p PING: client.ping
-    sleep 1
-  end
+  p PING: client.ping
+  client.get "/"
   client.finish
 end
