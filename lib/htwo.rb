@@ -38,7 +38,6 @@ module HTWO
         nil, # default is 4096
         nil, # don't specify push promise
         100, # max concurrent streams
-        65535, # initial window size
       ].freeze
 
       def self.encode stream_id, settings
@@ -67,9 +66,55 @@ module HTWO
     def on_close; end
   end
 
-  Stream = Struct.new(:id, :headers, :data, :session) do
+  Stream = Struct.new(:id, :headers, :data, :session, :state, :window_size, :rst_received, :content_length, :received_end_stream, :pending_body) do
     def respond headers, body: nil
       session.send_response self, headers, body
+    end
+
+    # State predicates
+    def idle?
+      state == :idle
+    end
+
+    def open?
+      state == :open
+    end
+
+    def closed?
+      state == :closed
+    end
+
+    def half_closed_remote?
+      state == :half_closed_remote
+    end
+
+    def half_closed_local?
+      state == :half_closed_local
+    end
+
+    # State transitions
+    def open!
+      self.state = :open
+    end
+
+    def half_close_remote!
+      if open?
+        self.state = :half_closed_remote
+      elsif half_closed_local?
+        self.state = :closed
+      end
+    end
+
+    def half_close_local!
+      if open?
+        self.state = :half_closed_local
+      elsif half_closed_remote?
+        self.state = :closed
+      end
+    end
+
+    def close!
+      self.state = :closed
     end
   end
 
@@ -104,12 +149,24 @@ module HTWO
       @window_size = 65535
       @next_stream_id = 1
       @streams = {}
+      @highest_stream_id = 0 # Track highest stream ID seen from peer
+      @open_stream_count = 0 # Track concurrent open streams
+      @local_max_concurrent_streams = 100
+
+      # CONTINUATION frame state
+      @expecting_continuation = false
+      @continuation_stream_id = nil
+      @header_buffer = nil
+      @continuation_flags = nil
+
+      # Server vs client mode (nil until connect/receive is called)
+      @server_mode = nil
     end
 
     def get path
       stream_id = @next_stream_id
       @next_stream_id += 2
-      @streams[stream_id] = Stream.new(stream_id, nil, nil, self)
+      @streams[stream_id] = Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
       headers = [
         [":method", "GET"],
@@ -136,12 +193,14 @@ module HTWO
     end
 
     def connect
+      @server_mode = false
       start_read_thread
       io.write CONNECTION_PREFACE
       send_settings io, nil
     end
 
     def receive
+      @server_mode = true
       preface = io.read CONNECTION_PREFACE.bytesize
       if preface != CONNECTION_PREFACE
         send_goaway io, 0x1 # PROTOCOL_ERROR
@@ -149,6 +208,7 @@ module HTWO
         return
       end
       send_settings io, nil
+      io.flush
       start_read_thread
     end
 
@@ -159,8 +219,95 @@ module HTWO
 
     private
 
+    def validate_headers headers, stream_id, is_trailer
+      # Track pseudo-headers and regular headers
+      pseudo_headers = {}
+      seen_regular_header = false
+
+      # Connection-specific headers that are not allowed
+      forbidden_headers = %w[connection keep-alive proxy-connection transfer-encoding upgrade]
+
+      headers.each do |name, value|
+        # Check for uppercase letters
+        if name =~ /[A-Z]/
+          send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+          return false
+        end
+
+        if name.start_with?(":")
+          # Pseudo-header
+          if is_trailer
+            # Pseudo-headers not allowed in trailers
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+
+          if seen_regular_header
+            # Pseudo-headers must come before regular headers
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+
+          # Check for duplicate pseudo-headers
+          if pseudo_headers.key?(name)
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+          pseudo_headers[name] = value
+
+          # Validate known pseudo-headers
+          unless %w[:method :scheme :path :authority :status].include?(name)
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+
+          # :status is for responses only
+          if @server_mode && name == ":status"
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+
+          # :path must not be empty
+          if name == ":path" && value.empty?
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+        else
+          # Regular header
+          seen_regular_header = true
+
+          # Check for forbidden connection-specific headers
+          if forbidden_headers.include?(name.downcase)
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+
+          # TE header only allowed with value "trailers"
+          if name.downcase == "te" && value != "trailers"
+            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            return false
+          end
+        end
+      end
+
+      # Check required pseudo-headers for requests (server mode)
+      if @server_mode && !is_trailer
+        unless pseudo_headers.key?(":method") && pseudo_headers.key?(":scheme") && pseudo_headers.key?(":path")
+          send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+          return false
+        end
+      end
+
+      true
+    end
+
     def start_read_thread
-      @reader = Thread.new { read_loop }
+      @reader = Thread.new do
+        read_loop
+      rescue => e
+        $stderr.puts "#{e.class}: #{e.message}"
+        $stderr.puts e.backtrace.first(5).join("\n")
+      end
     end
 
     def read_loop
@@ -169,7 +316,7 @@ module HTWO
       while true
         begin
           str = io.readpartial(9, header_buff)
-        rescue IOError, Errno::ECONNRESET
+        rescue IOError, EOFError, Errno::ECONNRESET
           break
         end
         len_type, flags, stream_ident = str.unpack("NCN")
@@ -183,29 +330,36 @@ module HTWO
           break
         end
 
+        # If we're expecting CONTINUATION, only CONTINUATION is allowed
+        if @expecting_continuation && type != 0x9
+          send_goaway io, 0x1 # PROTOCOL_ERROR
+          io.close
+          break
+        end
+
         case type
         when 0x0 # data
-          handle_data io, len, flags, stream_ident
+          break if handle_data(io, len, flags, stream_ident) == :close
         when 0x1 # headers
           break if handle_headers(io, len, flags, stream_ident) == :close
         when 0x2 # priority
-          raise NotImplementedError
+          break if handle_priority(io, len, flags, stream_ident) == :close
         when 0x3 # RST_STREAM
-          raise NotImplementedError
+          break if handle_rst_stream(io, len, flags, stream_ident) == :close
         when 0x4 # settings
-          handle_settings io, len, flags, stream_ident
+          break if handle_settings(io, len, flags, stream_ident) == :close
         when 0x5 # PUSH_PROMISE
-          raise NotImplementedError
+          break if handle_push_promise(io, len, flags, stream_ident) == :close
         when 0x6 # ping
-          handle_ping io, len, flags, stream_ident
+          break if handle_ping(io, len, flags, stream_ident) == :close
         when 0x7 # goaway
           handle_goaway io, len, flags, stream_ident
           io.close
           break
         when 0x8 # window update
-          handle_window_update io, len, flags, stream_ident
+          break if handle_window_update(io, len, flags, stream_ident) == :close
         when 0x9 # CONTINUATION
-          raise NotImplementedError
+          break if handle_continuation(io, len, flags, stream_ident) == :close
         else
           io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
         end
@@ -215,7 +369,6 @@ module HTWO
     end
 
     def send_ping io, data
-      puts __method__
       io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
       io.write data
     end
@@ -251,15 +404,48 @@ module HTWO
 
       io.write [len_type, flags, stream.id].pack("NCN")
       io.write hpack
+      io.flush
 
       if body
         body = body.b if body.encoding != Encoding::BINARY
-        len = body.bytesize
-        len_type = (len << 8) | 0x0
-        flags = 0x01 # END_STREAM
-        io.write [len_type, flags, stream.id].pack("NCN")
-        io.write body
+        send_data_with_flow_control stream, body
+      else
+        stream.half_close_local!
       end
+    end
+
+    def send_data_with_flow_control stream, body
+      offset = 0
+      remaining = body.bytesize
+
+      while remaining > 0
+        max_frame = @peer_settings[5] # MAX_FRAME_SIZE
+        send_size = [remaining, max_frame, stream.window_size, @window_size].min
+
+        # If window is exhausted, buffer remaining data
+        if send_size <= 0
+          stream.pending_body = body.byteslice(offset, remaining)
+          return
+        end
+
+        chunk = body.byteslice(offset, send_size)
+        is_last = (offset + send_size) >= body.bytesize
+
+        len = chunk.bytesize
+        len_type = (len << 8) | 0x0
+        flags = is_last ? 0x01 : 0x00 # END_STREAM on last chunk
+
+        io.write [len_type, flags, stream.id].pack("NCN")
+        io.write chunk
+        io.flush
+
+        stream.window_size -= len
+        @window_size -= len
+        offset += send_size
+        remaining -= send_size
+      end
+
+      stream.half_close_local!
     end
 
     private
@@ -269,48 +455,325 @@ module HTWO
       len_type = (len << 8) | 0x7
       flags = 0
       ident = 0
-      last_stream_id = 0
+      last_stream_id = @highest_stream_id
       io.write [len_type, flags, ident, last_stream_id, error].pack("NCNNN")
+      io.flush
     end
 
     def send_settings_ack io
       io.write "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+      io.flush
+    end
+
+    def send_rst_stream io, stream_id, error_code
+      len = 4
+      len_type = (len << 8) | 0x3 # RST_STREAM
+      flags = 0
+      io.write [len_type, flags, stream_id, error_code].pack("NCNN")
+      io.flush
     end
 
     def handle_data io, len, flags, stream_id
-      chunk = io.read(len)
-      stream = @streams[stream_id]
-      stream.data ||= "".b
-      stream.data << chunk
-      @handler.on_data stream, chunk
-      @handler.on_request stream if flags[0].positive?
-    end
-
-    def handle_headers io, len, flags, stream_id
-      payload = io.read(len)
-      return unless payload
-      begin
-        headers = @decoding_table.decode payload
-      rescue CompressionError
-        send_goaway io, 0x9 # COMPRESSION_ERROR
+      # DATA frames cannot have stream_id = 0
+      if stream_id.zero?
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
         io.close
         return :close
       end
-      stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self)
-      stream.headers = headers
-      @handler.on_headers stream
-      @handler.on_request stream if flags[0].positive?
+
+      # Check for PADDED flag (bit 3)
+      if flags[3].zero?
+        # No padding, read all data
+        chunk = io.read(len) if len > 0
+      else
+        # Read pad length
+        return unless len > 0
+        pad_length = io.read(1).unpack1("C")
+
+        # Validate pad length
+        if pad_length >= len
+          # Pad length is invalid (too large)
+          io.read(len - 1) if len > 1
+          send_goaway io, 0x1 # PROTOCOL_ERROR
+          io.close
+          return :close
+        end
+
+        # Read data (excluding pad length byte and padding)
+        data_len = len - pad_length - 1
+        chunk = io.read(data_len) if data_len > 0
+
+        # Read and discard padding
+        io.read(pad_length) if pad_length > 0
+      end
+
+      stream = @streams[stream_id]
+
+      # If stream doesn't exist or is in idle state, send error
+      if !stream || stream.idle?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Check stream state - DATA not allowed on closed or half_closed_remote
+      if stream.closed?
+        send_goaway io, 0x5 # STREAM_CLOSED
+        io.close
+        return :close
+      elsif stream.half_closed_remote?
+        send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
+        return
+      end
+
+      if chunk && chunk.bytesize > 0
+        stream.data ||= "".b
+        stream.data << chunk
+        @handler.on_data stream, chunk
+      end
+
+      # If END_STREAM flag is set, half-close remote
+      unless flags[0].zero?
+        # Validate content-length if specified
+        if stream.content_length && stream.data
+          if stream.data.bytesize != stream.content_length
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
+            return
+          end
+        end
+
+        stream.half_close_remote!
+        @handler.on_request stream
+      end
+    end
+
+    def handle_headers io, len, flags, stream_id
+      # If already expecting CONTINUATION, receiving HEADERS is an error
+      if @expecting_continuation
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Validate stream ID is non-zero
+      if stream_id.zero?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Validate stream ID parity (clients use odd, servers use even)
+      # In server mode, we expect odd stream IDs from client
+      # In client mode, we expect even stream IDs from server
+      if @server_mode && stream_id.even?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      elsif !@server_mode && stream_id.odd?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Validate stream ID is increasing (unless stream already exists)
+      if !@streams.key?(stream_id) && stream_id <= @highest_stream_id
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Check MAX_CONCURRENT_STREAMS limit for new streams
+      if !@streams.key?(stream_id) && @open_stream_count >= @local_max_concurrent_streams
+        io.read(len) if len > 0
+        send_rst_stream io, stream_id, 0x7 # REFUSED_STREAM
+        @highest_stream_id = stream_id if stream_id > @highest_stream_id
+        return
+      end
+
+      # Check stream state
+      stream = @streams[stream_id]
+      if stream
+        # Check if receiving second HEADERS without END_STREAM (trailers must have END_STREAM)
+        if stream.headers && !flags[0].positive?
+          # Receiving second HEADERS without END_STREAM is error
+          io.read(len) if len > 0
+          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
+          return
+        end
+
+        # Stream exists - validate state allows HEADERS
+        if stream.closed?
+          # Receiving HEADERS on closed stream
+          io.read(len) if len > 0
+
+          # If stream was closed with RST_STREAM, send RST_STREAM (stream error)
+          # If closed with END_STREAM, send GOAWAY (connection error)
+          if stream.rst_received
+            send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
+            return
+          else
+            send_goaway io, 0x5 # STREAM_CLOSED
+            io.close
+            return :close
+          end
+        elsif stream.half_closed_remote?
+          # Already received END_STREAM, can't receive more HEADERS
+          io.read(len) if len > 0
+          send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
+          return
+        end
+      end
+
+      # Check for PRIORITY flag (bit 5) - HEADERS can include priority data
+      has_priority = flags[5].positive?
+      priority_bytes = has_priority ? 5 : 0
+
+      # Check for PADDED flag (bit 3)
+      if flags[3].zero?
+        # No padding
+        payload = io.read(len)
+        return unless payload
+
+        # If PRIORITY flag set, validate and extract priority data
+        if has_priority
+          if payload.bytesize < 5
+            send_goaway io, 0x6 # FRAME_SIZE_ERROR
+            io.close
+            return :close
+          end
+          stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
+          # Check for self-dependency
+          if stream_dependency == stream_id
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
+            return
+          end
+          # Remove priority data from payload
+          payload = payload[5..-1] || "".b
+        end
+      else
+        # Has padding
+        return if len.zero?
+        pad_length = io.read(1).unpack1("C")
+
+        # Validate pad length (must account for priority data if present)
+        min_len = 1 + priority_bytes # pad_length byte + priority bytes
+        if pad_length >= len || (len - pad_length - 1) < priority_bytes
+          io.read(len - 1) if len > 1
+          send_goaway io, 0x1 # PROTOCOL_ERROR
+          io.close
+          return :close
+        end
+
+        # Read header block (excluding pad length byte, priority, and padding)
+        data_len = len - pad_length - 1
+        payload = io.read(data_len) if data_len > 0
+
+        # If PRIORITY flag set, validate and extract priority data
+        if has_priority && payload && payload.bytesize >= 5
+          stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
+          # Check for self-dependency
+          if stream_dependency == stream_id
+            # Read and discard remaining data
+            io.read(pad_length) if pad_length > 0
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
+            return
+          end
+          # Remove priority data from payload
+          payload = payload[5..-1] || "".b
+        end
+
+        # Read and discard padding
+        io.read(pad_length) if pad_length > 0
+      end
+
+      # Check if END_HEADERS flag is set (bit 2)
+      end_headers = flags[2].positive?
+
+      if end_headers
+        # Complete header block in this frame
+        begin
+          headers = @decoding_table.decode payload
+        rescue CompressionError
+          send_goaway io, 0x9 # COMPRESSION_ERROR
+          io.close
+          return :close
+        end
+
+        # Update highest stream ID seen
+        if stream_id > @highest_stream_id
+          @highest_stream_id = stream_id
+        end
+
+        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
+
+        # Validate headers
+        is_trailer = stream.headers ? true : false
+        return unless validate_headers(headers, stream_id, is_trailer)
+
+        # Transition state: idle -> open
+        if stream.idle?
+          stream.open!
+          @open_stream_count += 1
+        end
+
+        stream.headers = headers
+
+        # Extract content-length if present
+        content_length_header = headers.find { |k, v| k == "content-length" }
+        if content_length_header
+          stream.content_length = content_length_header[1].to_i
+        end
+
+        @handler.on_headers stream
+
+        # If END_STREAM flag is set, half-close remote
+        if flags[0].positive?
+          # Validate content-length before closing
+          if stream.content_length && stream.data
+            if stream.data.bytesize != stream.content_length
+              send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+              return
+            end
+          end
+
+          stream.half_close_remote!
+          @handler.on_request stream
+        end
+      else
+        # Partial header block, expect CONTINUATION
+        @expecting_continuation = true
+        @continuation_stream_id = stream_id
+        @header_buffer = payload.dup
+        @continuation_flags = flags # Save flags from HEADERS frame
+
+        # Update highest stream ID seen
+        if stream_id > @highest_stream_id
+          @highest_stream_id = stream_id
+        end
+      end
     end
 
     def handle_ping io, len, flags, stream_ident
-      raise NotImplementedError unless stream_ident.zero?
-      raise NotImplementedError unless len == 8
+      # PING must have stream_id = 0
+      unless stream_ident.zero?
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
 
-      flags &= 0x01
+      # PING must be exactly 8 bytes
+      unless len == 8
+        io.read(len) if len > 0
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
 
       payload = io.read(8)
-      if flags.zero?
-        # Peer PING: echo back with ACK flag
+      if flags[0].zero?
+        # Peer PING: echo back with ACK flag (bit 0)
         io.write "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
         io.write payload
       else
@@ -322,40 +785,331 @@ module HTWO
     end
 
     def handle_settings io, len, flags, stream_ident
-      puts __method__
-      read = 0
+      # SETTINGS must have stream_id = 0
+      unless stream_ident.zero?
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
 
-      if flags.positive?
+      # SETTINGS with ACK flag must have zero length (bit 0)
+      if flags[0].positive?
         if len.positive?
-          raise "fixme: connection error case"
+          io.read(len)
+          send_goaway io, 0x6 # FRAME_SIZE_ERROR
+          io.close
+          return :close
         end
-        puts "got ack"
         return
       end
 
+      # SETTINGS length must be multiple of 6
+      if (len % 6) != 0
+        io.read(len) if len > 0
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
+
+      read = 0
       s = "\0".b * 6
+      old_initial_window_size = @peer_settings[4]
+
       while read < len
         ident, value = io.readpartial(6, s).unpack("nN")
-        @peer_settings[ident] = value
+
+        # Validate parameter values
+        case ident
+        when 0x2 # SETTINGS_ENABLE_PUSH
+          unless value == 0 || value == 1
+            send_goaway io, 0x1 # PROTOCOL_ERROR
+            io.close
+            return :close
+          end
+        when 0x4 # SETTINGS_INITIAL_WINDOW_SIZE
+          if value > 0x7FFF_FFFF # 2^31 - 1
+            send_goaway io, 0x3 # FLOW_CONTROL_ERROR
+            io.close
+            return :close
+          end
+        when 0x5 # SETTINGS_MAX_FRAME_SIZE
+          if value < 16384 || value > 16777215
+            send_goaway io, 0x1 # PROTOCOL_ERROR
+            io.close
+            return :close
+          end
+        end
+
+        @peer_settings[ident] = value if ident < @peer_settings.length
         read += 6
       end
+
+      # Apply window size updates to existing streams
+      new_initial_window_size = @peer_settings[4]
+      if new_initial_window_size != old_initial_window_size
+        delta = new_initial_window_size - old_initial_window_size
+
+        @streams.each_value do |stream|
+          next if stream.idle? || stream.closed?
+
+          stream.window_size ||= old_initial_window_size
+          new_window = stream.window_size + delta
+
+          # Only overflow (> 2^31-1) is an error
+          # Negative windows are valid - sender just can't send until WINDOW_UPDATE
+          if new_window > 0x7FFF_FFFF
+            send_goaway io, 0x3 # FLOW_CONTROL_ERROR
+            io.close
+            return :close
+          end
+
+          stream.window_size = new_window
+
+          # Flush pending data if window opened up
+          if stream.pending_body && stream.window_size > 0
+            send_data_with_flow_control stream, stream.pending_body
+            stream.pending_body = nil
+          end
+        end
+      end
+
       send_settings_ack io
     end
 
     def handle_goaway io, len, flags, stream_ident
-      puts __method__
-      raise NotImplementedError unless stream_ident.zero?
+      # GOAWAY must have stream_id = 0
+      unless stream_ident.zero?
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # GOAWAY must have at least 8 bytes (last_stream_id + error_code)
+      if len < 8
+        io.read(len) if len > 0
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
 
       buff = "\0".b * 4
       last_stream_id = io.readpartial(4, buff).unpack1("N") & 0x7FFF_FFF
       error_code = io.readpartial(4, buff).unpack1("N")
+
+      # Read optional debug data
+      if len > 8
+        io.read(len - 8)
+      end
     end
 
     def handle_window_update io, len, flags, stream_ident
-      puts __method__
-      increment = io.readpartial(4).unpack1("N") & 0x7FFF_FFF
-      raise NotImplementedError unless stream_ident == 0
-      @window_size += increment
+      # WINDOW_UPDATE must be exactly 4 bytes
+      unless len == 4
+        io.read(len) if len > 0
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
+
+      increment = io.readpartial(4).unpack1("N") & 0x7FFF_FFFF
+
+      # Increment must be non-zero
+      if increment.zero?
+        if stream_ident.zero?
+          # Connection-level window update with 0 increment
+          send_goaway io, 0x1 # PROTOCOL_ERROR
+          io.close
+          return :close
+        else
+          # Stream-level window update with 0 increment
+          send_rst_stream io, stream_ident, 0x1 # PROTOCOL_ERROR
+          return
+        end
+      end
+
+      if stream_ident.zero?
+        # Connection-level window update
+        @window_size += increment
+
+        # Check for overflow
+        if @window_size > 0x7FFF_FFFF
+          send_goaway io, 0x3 # FLOW_CONTROL_ERROR
+          io.close
+          return :close
+        end
+      else
+        # Stream-level window update
+        stream = @streams[stream_ident]
+
+        # WINDOW_UPDATE on idle stream is PROTOCOL_ERROR
+        if !stream || stream.idle?
+          send_goaway io, 0x1 # PROTOCOL_ERROR
+          io.close
+          return :close
+        end
+
+        stream.window_size ||= 65535
+        stream.window_size += increment
+
+        # Check for overflow
+        if stream.window_size > 0x7FFF_FFFF
+          send_rst_stream io, stream_ident, 0x3 # FLOW_CONTROL_ERROR
+          return
+        end
+
+        # Flush pending data if window opened up
+        if stream.pending_body && stream.window_size > 0
+          send_data_with_flow_control stream, stream.pending_body
+          stream.pending_body = nil
+        end
+      end
+    end
+
+    def handle_rst_stream io, len, flags, stream_id
+      # RST_STREAM must have stream_id != 0
+      if stream_id.zero?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # RST_STREAM must be exactly 4 bytes
+      if len != 4
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
+
+      error_code = io.readpartial(4).unpack1("N")
+
+      # Validate stream state - RST_STREAM on idle stream is PROTOCOL_ERROR
+      stream = @streams[stream_id]
+      if !stream || stream.idle?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # Close the stream and mark that RST_STREAM was received
+      stream.rst_received = true
+      stream.close!
+    end
+
+    def handle_priority io, len, flags, stream_id
+      # PRIORITY with stream_id = 0 is PROTOCOL_ERROR
+      if stream_id.zero?
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # PRIORITY must be exactly 5 bytes
+      if len != 5
+        send_goaway io, 0x6 # FRAME_SIZE_ERROR
+        io.close
+        return :close
+      end
+
+      # Read priority data
+      data = io.readpartial(5)
+      stream_dependency = data.unpack1("N") & 0x7FFF_FFFF
+      # exclusive = (data.unpack1("N") & 0x8000_0000) != 0
+      # weight = data[4].unpack1("C")
+
+      # Check for self-dependency
+      if stream_dependency == stream_id
+        # Send RST_STREAM for this stream
+        send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
+        return
+      end
+
+      # Otherwise, we just ignore priority info for now
+    end
+
+    def handle_push_promise io, len, flags, stream_id
+      # Clients MUST NOT send PUSH_PROMISE
+      # Servers receiving PUSH_PROMISE must treat as PROTOCOL_ERROR
+      io.read(len) if len > 0
+      send_goaway io, 0x1 # PROTOCOL_ERROR
+      io.close
+      :close
+    end
+
+    def handle_continuation io, len, flags, stream_id
+      # CONTINUATION without prior HEADERS/PUSH_PROMISE is error
+      unless @expecting_continuation
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # CONTINUATION must be for the same stream
+      if stream_id != @continuation_stream_id
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      # CONTINUATION with stream_id = 0 is error
+      if stream_id.zero?
+        io.read(len) if len > 0
+        send_goaway io, 0x1 # PROTOCOL_ERROR
+        io.close
+        return :close
+      end
+
+      payload = io.read(len)
+      return unless payload
+
+      # Append to header buffer
+      @header_buffer << payload
+
+      # Check if END_HEADERS flag is set (bit 2)
+      end_headers = flags[2].positive?
+
+      if end_headers
+        # Complete header block
+        @expecting_continuation = false
+        complete_payload = @header_buffer
+        saved_flags = @continuation_flags # Use flags from original HEADERS frame
+        @header_buffer = nil
+        @continuation_stream_id = nil
+        @continuation_flags = nil
+
+        begin
+          headers = @decoding_table.decode complete_payload
+        rescue CompressionError
+          send_goaway io, 0x9 # COMPRESSION_ERROR
+          io.close
+          return :close
+        end
+
+        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
+
+        # Validate headers
+        is_trailer = stream.headers ? true : false
+        return unless validate_headers(headers, stream_id, is_trailer)
+
+        # Transition state: idle -> open
+        if stream.idle?
+          stream.open!
+          @open_stream_count += 1
+        end
+
+        stream.headers = headers
+        @handler.on_headers stream
+
+        # If END_STREAM flag was set on original HEADERS frame, half-close remote
+        if saved_flags[0].positive?
+          stream.half_close_remote!
+          @handler.on_request stream
+        end
+      end
+      # Otherwise, keep expecting more CONTINUATION frames
     end
   end
 

@@ -19,6 +19,8 @@ while true
   client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
   logger.debug "new connection"
-  session = HTWO::Session.new(client, handler: MyApp.new)
-  session.receive
+  Thread.new(client) do |c|
+    session = HTWO::Session.new(c, handler: MyApp.new)
+    session.receive
+  end
 end
