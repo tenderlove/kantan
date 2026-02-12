@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "htwo/hpack"
-#require "http2"
+require "htwo/errors"
 
 module HTWO
   module Frames

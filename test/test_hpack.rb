@@ -69,7 +69,7 @@ module HTWO
     def test_truncated_header_block_name
       decoder = HTWO::HPACK.new
       # Literal header with incremental indexing, new name (0x40), then truncated
-      assert_raises HTWO::CompressionError do
+      assert_raises HTWO::Errors::CompressionError do
         decoder.decode "\x40".b
       end
     end
@@ -77,7 +77,7 @@ module HTWO
     def test_truncated_header_block_value
       decoder = HTWO::HPACK.new
       # Literal header with incremental indexing, indexed name (:path), then truncated before value
-      assert_raises HTWO::CompressionError do
+      assert_raises HTWO::Errors::CompressionError do
         decoder.decode "\x44".b
       end
     end
@@ -85,7 +85,7 @@ module HTWO
     def test_truncated_header_block_literal_name
       decoder = HTWO::HPACK.new
       # Without indexing (0x00), new name, name length 3, "foo", then truncated before value
-      assert_raises HTWO::CompressionError do
+      assert_raises HTWO::Errors::CompressionError do
         decoder.decode "\x00\x03foo".b
       end
     end
@@ -93,7 +93,7 @@ module HTWO
     def test_truncated_header_block_without_indexing
       decoder = HTWO::HPACK.new
       # Without indexing (0x00), new name, then truncated
-      assert_raises HTWO::CompressionError do
+      assert_raises HTWO::Errors::CompressionError do
         decoder.decode "\x00".b
       end
     end

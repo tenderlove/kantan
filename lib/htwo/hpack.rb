@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 
 require "htwo/huffman"
+require "htwo/errors"
 
 module HTWO
-  class CompressionError < StandardError; end
-
   class HPACK
     class DynamicTable # :nodoc:
       def initialize max_size
@@ -193,7 +192,7 @@ module HTWO
           end
 
           if name_idx.zero?
-            len = buffer.getbyte(pos) || raise(CompressionError, "truncated header block")
+            len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
             huffman = len[7].positive?
             len &= 0x7F
             pos += 1
@@ -211,7 +210,7 @@ module HTWO
             name = lookup(name_idx).first
           end
 
-          len = buffer.getbyte(pos) || raise(CompressionError, "truncated header block")
+          len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
           huffman = len[7].positive?
           len &= 0x7F
           pos += 1
@@ -244,7 +243,7 @@ module HTWO
           end
 
           if name_idx == 0
-            len = buffer.getbyte(pos) || raise(CompressionError, "truncated header block")
+            len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
             huffman = len[7].positive?
             len &= 0x7F
             pos += 1
@@ -262,7 +261,7 @@ module HTWO
             name = lookup(name_idx).first
           end
 
-          len = buffer.getbyte(pos) || raise(CompressionError, "truncated header block")
+          len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
           huffman = len[7].positive?
           len &= 0x7F
           pos += 1
