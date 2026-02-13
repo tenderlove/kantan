@@ -182,25 +182,28 @@ module HTWO
       @server_mode = nil
     end
 
-    def get path
+    def request headers, body: nil
       stream_id = @next_stream_id
       @next_stream_id += 2
-      @streams[stream_id] = Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
-
-      headers = [
-        [":method", "GET"],
-        [":path", "/"],
-        [":scheme", "http"],
-        [":authority", "localhost:8443"],
-        ["priority", "u=3"],
-        ["accept", "*/*"],
-        ["accept-encoding", "gzip, deflate"],
-        ["user-agent", "htwo"],
-      ]
+      stream = Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
+      @streams[stream_id] = stream
 
       hpack = @encoding_table.encode headers
+      len = hpack.bytesize
+      len_type = (len << 8) | 0x1
 
-      send_headers io, stream_id, hpack
+      flags = 0x04 # END_HEADERS
+      flags |= 0x01 unless body # END_STREAM if no body
+
+      io.write [len_type, flags, stream_id].pack("NCN")
+      io.write hpack
+      io.flush
+
+      if body
+        body = body.b if body.encoding != Encoding::BINARY
+        send_data_with_flow_control stream, body
+      end
+
       stream_id
     end
 
@@ -277,12 +280,7 @@ module HTWO
     end
 
     def start_read_thread
-      @reader = Thread.new do
-        read_loop
-      rescue => e
-        $stderr.puts "#{e.class}: #{e.message}"
-        $stderr.puts e.backtrace.first(5).join("\n")
-      end
+      @reader = Thread.new { read_loop }
     end
 
     def read_loop
@@ -347,16 +345,6 @@ module HTWO
       io.write data
     end
 
-    def send_headers io, ident, hpack
-      len = hpack.bytesize
-      len_type = (len << 8) | 0x1
-
-      flags = 0x04 | # END_HEADERS
-        0x01 # END_STREAM
-
-      io.write [len_type, flags, ident].pack("NCN")
-      io.write hpack
-    end
 
     def send_settings io, settings
       if settings
@@ -937,8 +925,8 @@ module HTWO
           when :ping
             handler.ping_port = port
             session.ping
-          when :get
-            stream_id = session.get(data)
+          when :request
+            stream_id = session.request(data)
             handler.register(stream_id, port)
           when :finish then session.finish; break
           else
@@ -965,14 +953,14 @@ module HTWO
       Ractor.receive
     end
 
-    def get path
-      @s << [:get, Ractor.current.default_port, path]
-      headers = Ractor.receive
+    def request headers
+      @s << [:request, Ractor.current.default_port, headers]
+      resp_headers = Ractor.receive
       body = "".b
       while part = Ractor.receive
         body << part
       end
-      [headers, body]
+      [resp_headers, body]
     end
   end
 end
@@ -990,6 +978,11 @@ if $0 == __FILE__
   client = HTWO::Connection.new tcp
   client.connect
   p PING: client.ping
-  p client.get "/"
+  p client.request([
+    [":method", "GET"],
+    [":path", "/"],
+    [":scheme", "https"],
+    [":authority", "localhost:8443"],
+  ])
   client.finish
 end
