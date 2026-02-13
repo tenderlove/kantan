@@ -2,7 +2,27 @@
 
 require 'minitest/autorun'
 require 'socket'
-require "htwo/hpack"
+require "htwo"
+
+class TestClientHandler < HTWO::Handler
+  attr_reader :queue
+
+  def initialize
+    @queue = Queue.new
+  end
+
+  def on_headers(stream) = @queue << [:headers, stream.headers]
+  def on_data(stream, chunk) = @queue << [:data, chunk]
+  def on_request(stream) = @queue << [:done, stream.id]
+end
+
+class TestServerHandler < HTWO::Handler
+  attr_accessor :on_request_block
+
+  def on_request(stream)
+    @on_request_block&.call(stream)
+  end
+end
 
 class TestHTTP2 < Minitest::Test
   def test_hpack_encoding_decoding
@@ -16,92 +36,49 @@ class TestHTTP2 < Minitest::Test
     assert_equal headers, decoded
   end
 
-  def test_frame_encoding_decoding
-    frame = HTWO::Frame.new(
-      type: :headers,
-      flags: HTWO::FLAGS[:end_headers],
-      stream_id: 1,
-      payload: "test payload"
-    )
+  def test_simple_get
+    client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
+    client_io.sync = true
+    server_io.sync = true
 
-    binary = frame.to_binary
-    assert_equal 21, binary.bytesize
+    server_handler = TestServerHandler.new
+    server_handler.on_request_block = ->(stream) {
+      stream.respond [[":status", "200"]], body: "Hello, world!"
+    }
 
-    io = StringIO.new(binary)
-    decoded = HTWO::Frame.parse(io)
+    client_handler = TestClientHandler.new
 
-    assert_equal :headers, decoded.type
-    assert_equal 1, decoded.stream_id
-    assert_equal "test payload", decoded.payload
-  end
+    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    client_session = HTWO::Session.new(client_io, handler: client_handler)
 
-  def test_client_server_communication
-    client_sock, server_sock = Socket.pair(:UNIX, :STREAM, 0)
+    server_thread = Thread.new { server_session.receive }
+    client_session.connect
 
-    server_received = []
-    client_received = []
+    client_session.request([
+      [":method", "GET"],
+      [":path", "/"],
+      [":scheme", "https"],
+      [":authority", "localhost"],
+    ])
 
-    # Server thread
-    server_thread = Thread.new do
-      http2 = HTWO::Server.new(server_sock)
-
-      http2.on_headers do |stream, headers|
-        server_received << { type: :headers, data: headers }
+    # Collect response
+    response_headers = nil
+    body = "".b
+    loop do
+      type, value = client_handler.queue.pop
+      case type
+      when :headers then response_headers = value
+      when :data then body << value
+      when :done then break
       end
-
-      http2.on_data do |stream, data|
-        server_received << { type: :data, data: data }
-      end
-
-      http2.on_stream do |stream|
-        http2.send_headers(stream.id, [[":status", "200"]])
-        http2.send_data(stream.id, "Hello!", end_stream: true)
-      end
-
-      http2.start rescue nil
     end
 
-    # Client thread
-    client_thread = Thread.new do
-      sleep 0.1
-      http2 = HTWO::Client.new(client_sock)
-
-      http2.on_headers do |stream, headers|
-        client_received << { type: :headers, data: headers }
-      end
-
-      http2.on_data do |stream, data|
-        client_received << { type: :data, data: data }
-      end
-
-      http2.start
-
-      headers = [
-        [":method", "GET"],
-        [":path", "/"],
-        [":scheme", "https"],
-        [":authority", "test"]
-      ]
-      http2.request(headers, body: "test")
-
-      Thread.new { http2.run }
-      sleep 1
-      http2.close rescue nil
-    end
-
-    client_thread.join
-    server_thread.join(2)
-
-    # Verify server received request
-    assert server_received.any? { |r| r[:type] == :headers }
-    assert server_received.any? { |r| r[:type] == :data && r[:data] == "test" }
-
-    # Verify client received response
-    assert client_received.any? { |r| r[:type] == :headers }
-    assert client_received.any? { |r| r[:type] == :data && r[:data] == "Hello!" }
+    assert_equal [[":status", "200"]], response_headers
+    assert_equal "Hello, world!", body
 
   ensure
-    client_sock&.close rescue nil
-    server_sock&.close rescue nil
+    client_io&.close rescue nil
+    server_io&.close rescue nil
+    server_thread&.join(2)
   end
 end

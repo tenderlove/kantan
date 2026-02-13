@@ -243,7 +243,6 @@ module HTWO
           @dynamic_table.resize(new_size)
         else
           seen_header = true
-          never_indexed = byte & 0xF0 == 0x10
           name_idx = byte & 0x0F
           if name_idx == 15
             remainder, pos = buffer.unpack("R^", offset: pos)

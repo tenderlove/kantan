@@ -509,11 +509,13 @@ module HTWO
       # Validate stream ID is non-zero
       raise Errors::ProtocolError.new("Got HEADERS on stream 0", len) if stream_id.zero?
 
-      # Validate stream ID parity (clients use odd, servers use even)
-      if @server_mode && stream_id.even?
-        raise Errors::ProtocolError.new("Even stream ID from client", len)
-      elsif !@server_mode && stream_id.odd?
-        raise Errors::ProtocolError.new("Odd stream ID from server", len)
+      # Validate stream ID parity for new streams (peer-initiated)
+      if !@streams.key?(stream_id)
+        if @server_mode && stream_id.even?
+          raise Errors::ProtocolError.new("Even stream ID from client", len)
+        elsif !@server_mode && stream_id.odd?
+          raise Errors::ProtocolError.new("Odd stream ID from server", len)
+        end
       end
 
       # Validate stream ID is increasing (unless stream already exists)
@@ -566,7 +568,6 @@ module HTWO
         pad_length = io.readbyte
 
         # Validate pad length (must account for priority data if present)
-        min_len = 1 + priority_bytes # pad_length byte + priority bytes
         if pad_length >= len || (len - pad_length - 1) < priority_bytes
           raise Errors::ProtocolError.new("Invalid HEADERS pad length", len - 1)
         end
@@ -741,9 +742,8 @@ module HTWO
       raise Errors::ProtocolError.new("GOAWAY on non-zero stream", len) unless stream_ident.zero?
       raise Errors::FrameSizeError.new("GOAWAY too short", len) if len < 8
 
-      buff = "\0".b * 4
-      last_stream_id = io.read(4, buff).unpack1("N") & 0x7FFF_FFFF
-      error_code = io.read(4, buff).unpack1("N")
+      # Consume last_stream_id and error_code fields to advance the IO position
+      io.read(8)
 
       # Read optional debug data
       if len > 8
@@ -792,7 +792,8 @@ module HTWO
       raise Errors::ProtocolError.new("RST_STREAM on stream 0", len) if stream_id.zero?
       raise Errors::FrameSizeError.new("RST_STREAM length != 4", len) if len != 4
 
-      error_code = io.read(4).unpack1("N")
+      # Consume error_code to advance the IO position
+      io.read(4)
 
       # Validate stream state - RST_STREAM on idle stream is PROTOCOL_ERROR
       stream = @streams[stream_id]
