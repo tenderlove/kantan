@@ -324,44 +324,47 @@ module HTWO
         type = len_type & 0xFF
         stream_ident &= 0x7FFF_FFFF # clear reserved bit
 
-        if len > 16384 && type != 0x4 # SETTINGS_MAX_FRAME_SIZE default
-          send_goaway io, 0x6 # FRAME_SIZE_ERROR
-          io.close
-          break
-        end
+        begin
+          if len > 16384 && type != 0x4 # SETTINGS_MAX_FRAME_SIZE default
+            raise Errors::FrameSizeError.new("Frame too large", 0)
+          end
 
-        # If we're expecting CONTINUATION, only CONTINUATION is allowed
-        if @expecting_continuation && type != 0x9
-          send_goaway io, 0x1 # PROTOCOL_ERROR
-          io.close
-          break
-        end
+          # If we're expecting CONTINUATION, only CONTINUATION is allowed
+          if @expecting_continuation && type != 0x9
+            raise Errors::ProtocolError.new("Expected CONTINUATION", 0)
+          end
 
-        case type
-        when 0x0 # data
-          break if handle_data(io, len, flags, stream_ident) == :close
-        when 0x1 # headers
-          break if handle_headers(io, len, flags, stream_ident) == :close
-        when 0x2 # priority
-          break if handle_priority(io, len, flags, stream_ident) == :close
-        when 0x3 # RST_STREAM
-          break if handle_rst_stream(io, len, flags, stream_ident) == :close
-        when 0x4 # settings
-          break if handle_settings(io, len, flags, stream_ident) == :close
-        when 0x5 # PUSH_PROMISE
-          break if handle_push_promise(io, len, flags, stream_ident) == :close
-        when 0x6 # ping
-          break if handle_ping(io, len, flags, stream_ident) == :close
-        when 0x7 # goaway
-          handle_goaway io, len, flags, stream_ident
+          case type
+          when 0x0 # data
+            break if handle_data(io, len, flags, stream_ident) == :close
+          when 0x1 # headers
+            break if handle_headers(io, len, flags, stream_ident) == :close
+          when 0x2 # priority
+            break if handle_priority(io, len, flags, stream_ident) == :close
+          when 0x3 # RST_STREAM
+            break if handle_rst_stream(io, len, flags, stream_ident) == :close
+          when 0x4 # settings
+            break if handle_settings(io, len, flags, stream_ident) == :close
+          when 0x5 # PUSH_PROMISE
+            break if handle_push_promise(io, len, flags, stream_ident) == :close
+          when 0x6 # ping
+            break if handle_ping(io, len, flags, stream_ident) == :close
+          when 0x7 # goaway
+            handle_goaway io, len, flags, stream_ident
+            io.close
+            break
+          when 0x8 # window update
+            break if handle_window_update(io, len, flags, stream_ident) == :close
+          when 0x9 # CONTINUATION
+            break if handle_continuation(io, len, flags, stream_ident) == :close
+          else
+            io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
+          end
+        rescue Errors::ConnectionError => e
+          io.read(e.remaining) if e.remaining > 0
+          send_goaway io, e.error_code
           io.close
           break
-        when 0x8 # window update
-          break if handle_window_update(io, len, flags, stream_ident) == :close
-        when 0x9 # CONTINUATION
-          break if handle_continuation(io, len, flags, stream_ident) == :close
-        else
-          io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
         end
       end
 
@@ -476,10 +479,7 @@ module HTWO
     def handle_data io, len, flags, stream_id
       # DATA frames cannot have stream_id = 0
       if stream_id.zero?
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Got DATA on stream 0", len)
       end
 
       # Check for PADDED flag (bit 3)
@@ -494,10 +494,7 @@ module HTWO
         # Validate pad length
         if pad_length >= len
           # Pad length is invalid (too large)
-          io.read(len - 1) if len > 1
-          send_goaway io, 0x1 # PROTOCOL_ERROR
-          io.close
-          return :close
+          raise Errors::ProtocolError.new("Invalid pad length", len - 1)
         end
 
         # Read data (excluding pad length byte and padding)
@@ -512,16 +509,12 @@ module HTWO
 
       # If stream doesn't exist or is in idle state, send error
       if !stream || stream.idle?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Invalid stream", 0)
       end
 
       # Check stream state - DATA not allowed on closed or half_closed_remote
       if stream.closed?
-        send_goaway io, 0x5 # STREAM_CLOSED
-        io.close
-        return :close
+        raise Errors::StreamClosedError.new("DATA on closed stream", 0)
       elsif stream.half_closed_remote?
         send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
         return
@@ -551,36 +544,24 @@ module HTWO
     def handle_headers io, len, flags, stream_id
       # If already expecting CONTINUATION, receiving HEADERS is an error
       if @expecting_continuation
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Already expecting continuation", 0)
       end
 
       # Validate stream ID is non-zero
       if stream_id.zero?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Got HEADERS on stream 0", len)
       end
 
       # Validate stream ID parity (clients use odd, servers use even)
-      # In server mode, we expect odd stream IDs from client
-      # In client mode, we expect even stream IDs from server
       if @server_mode && stream_id.even?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Even stream ID from client", len)
       elsif !@server_mode && stream_id.odd?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Odd stream ID from server", len)
       end
 
       # Validate stream ID is increasing (unless stream already exists)
       if !@streams.key?(stream_id) && stream_id <= @highest_stream_id
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
+        raise Errors::ProtocolError.new("Stream ID not increasing", len)
       end
 
       # Check MAX_CONCURRENT_STREAMS limit for new streams
@@ -613,9 +594,7 @@ module HTWO
             send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
             return
           else
-            send_goaway io, 0x5 # STREAM_CLOSED
-            io.close
-            return :close
+            raise Errors::StreamClosedError.new("HEADERS on closed stream", 0)
           end
         elsif stream.half_closed_remote?
           # Already received END_STREAM, can't receive more HEADERS
@@ -638,9 +617,7 @@ module HTWO
         # If PRIORITY flag set, validate and extract priority data
         if has_priority
           if payload.bytesize < 5
-            send_goaway io, 0x6 # FRAME_SIZE_ERROR
-            io.close
-            return :close
+            raise Errors::FrameSizeError.new("HEADERS priority too short", 0)
           end
           stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
           # Check for self-dependency
@@ -659,10 +636,7 @@ module HTWO
         # Validate pad length (must account for priority data if present)
         min_len = 1 + priority_bytes # pad_length byte + priority bytes
         if pad_length >= len || (len - pad_length - 1) < priority_bytes
-          io.read(len - 1) if len > 1
-          send_goaway io, 0x1 # PROTOCOL_ERROR
-          io.close
-          return :close
+          raise Errors::ProtocolError.new("Invalid HEADERS pad length", len - 1)
         end
 
         # Read header block (excluding pad length byte, priority, and padding)
@@ -692,13 +666,7 @@ module HTWO
 
       if end_headers
         # Complete header block in this frame
-        begin
-          headers = @decoding_table.decode payload
-        rescue CompressionError
-          send_goaway io, 0x9 # COMPRESSION_ERROR
-          io.close
-          return :close
-        end
+        headers = @decoding_table.decode payload
 
         # Update highest stream ID seen
         if stream_id > @highest_stream_id
@@ -755,21 +723,8 @@ module HTWO
     end
 
     def handle_ping io, len, flags, stream_ident
-      # PING must have stream_id = 0
-      unless stream_ident.zero?
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # PING must be exactly 8 bytes
-      unless len == 8
-        io.read(len) if len > 0
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("PING on non-zero stream", len) unless stream_ident.zero?
+      raise Errors::FrameSizeError.new("PING length != 8", len) unless len == 8
 
       payload = io.read(8)
       if flags[0].zero?
@@ -785,32 +740,15 @@ module HTWO
     end
 
     def handle_settings io, len, flags, stream_ident
-      # SETTINGS must have stream_id = 0
-      unless stream_ident.zero?
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("SETTINGS on non-zero stream", len) unless stream_ident.zero?
 
       # SETTINGS with ACK flag must have zero length (bit 0)
       if flags[0].positive?
-        if len.positive?
-          io.read(len)
-          send_goaway io, 0x6 # FRAME_SIZE_ERROR
-          io.close
-          return :close
-        end
+        raise Errors::FrameSizeError.new("SETTINGS ACK with payload", len) if len.positive?
         return
       end
 
-      # SETTINGS length must be multiple of 6
-      if (len % 6) != 0
-        io.read(len) if len > 0
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::FrameSizeError.new("SETTINGS length not multiple of 6", len) if (len % 6) != 0
 
       read = 0
       s = "\0".b * 6
@@ -823,21 +761,15 @@ module HTWO
         case ident
         when 0x2 # SETTINGS_ENABLE_PUSH
           unless value == 0 || value == 1
-            send_goaway io, 0x1 # PROTOCOL_ERROR
-            io.close
-            return :close
+            raise Errors::ProtocolError.new("ENABLE_PUSH must be 0 or 1", len - read - 6)
           end
         when 0x4 # SETTINGS_INITIAL_WINDOW_SIZE
-          if value > 0x7FFF_FFFF # 2^31 - 1
-            send_goaway io, 0x3 # FLOW_CONTROL_ERROR
-            io.close
-            return :close
+          if value > 0x7FFF_FFFF
+            raise Errors::FlowControlError.new("INITIAL_WINDOW_SIZE too large", len - read - 6)
           end
         when 0x5 # SETTINGS_MAX_FRAME_SIZE
           if value < 16384 || value > 16777215
-            send_goaway io, 0x1 # PROTOCOL_ERROR
-            io.close
-            return :close
+            raise Errors::ProtocolError.new("MAX_FRAME_SIZE out of range", len - read - 6)
           end
         end
 
@@ -859,9 +791,7 @@ module HTWO
           # Only overflow (> 2^31-1) is an error
           # Negative windows are valid - sender just can't send until WINDOW_UPDATE
           if new_window > 0x7FFF_FFFF
-            send_goaway io, 0x3 # FLOW_CONTROL_ERROR
-            io.close
-            return :close
+            raise Errors::FlowControlError.new("Window size overflow", 0)
           end
 
           stream.window_size = new_window
@@ -878,21 +808,8 @@ module HTWO
     end
 
     def handle_goaway io, len, flags, stream_ident
-      # GOAWAY must have stream_id = 0
-      unless stream_ident.zero?
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # GOAWAY must have at least 8 bytes (last_stream_id + error_code)
-      if len < 8
-        io.read(len) if len > 0
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("GOAWAY on non-zero stream", len) unless stream_ident.zero?
+      raise Errors::FrameSizeError.new("GOAWAY too short", len) if len < 8
 
       buff = "\0".b * 4
       last_stream_id = io.readpartial(4, buff).unpack1("N") & 0x7FFF_FFF
@@ -905,50 +822,26 @@ module HTWO
     end
 
     def handle_window_update io, len, flags, stream_ident
-      # WINDOW_UPDATE must be exactly 4 bytes
-      unless len == 4
-        io.read(len) if len > 0
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::FrameSizeError.new("WINDOW_UPDATE length != 4", len) unless len == 4
 
       increment = io.readpartial(4).unpack1("N") & 0x7FFF_FFFF
 
       # Increment must be non-zero
       if increment.zero?
         if stream_ident.zero?
-          # Connection-level window update with 0 increment
-          send_goaway io, 0x1 # PROTOCOL_ERROR
-          io.close
-          return :close
+          raise Errors::ProtocolError.new("WINDOW_UPDATE increment 0 on connection", 0)
         else
-          # Stream-level window update with 0 increment
           send_rst_stream io, stream_ident, 0x1 # PROTOCOL_ERROR
           return
         end
       end
 
       if stream_ident.zero?
-        # Connection-level window update
         @window_size += increment
-
-        # Check for overflow
-        if @window_size > 0x7FFF_FFFF
-          send_goaway io, 0x3 # FLOW_CONTROL_ERROR
-          io.close
-          return :close
-        end
+        raise Errors::FlowControlError.new("Connection window overflow", 0) if @window_size > 0x7FFF_FFFF
       else
-        # Stream-level window update
         stream = @streams[stream_ident]
-
-        # WINDOW_UPDATE on idle stream is PROTOCOL_ERROR
-        if !stream || stream.idle?
-          send_goaway io, 0x1 # PROTOCOL_ERROR
-          io.close
-          return :close
-        end
+        raise Errors::ProtocolError.new("WINDOW_UPDATE on idle stream", 0) if !stream || stream.idle?
 
         stream.window_size ||= 65535
         stream.window_size += increment
@@ -968,29 +861,14 @@ module HTWO
     end
 
     def handle_rst_stream io, len, flags, stream_id
-      # RST_STREAM must have stream_id != 0
-      if stream_id.zero?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # RST_STREAM must be exactly 4 bytes
-      if len != 4
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("RST_STREAM on stream 0", len) if stream_id.zero?
+      raise Errors::FrameSizeError.new("RST_STREAM length != 4", len) if len != 4
 
       error_code = io.readpartial(4).unpack1("N")
 
       # Validate stream state - RST_STREAM on idle stream is PROTOCOL_ERROR
       stream = @streams[stream_id]
-      if !stream || stream.idle?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("RST_STREAM on idle stream", 0) if !stream || stream.idle?
 
       # Close the stream and mark that RST_STREAM was received
       stream.rst_received = true
@@ -998,19 +876,8 @@ module HTWO
     end
 
     def handle_priority io, len, flags, stream_id
-      # PRIORITY with stream_id = 0 is PROTOCOL_ERROR
-      if stream_id.zero?
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # PRIORITY must be exactly 5 bytes
-      if len != 5
-        send_goaway io, 0x6 # FRAME_SIZE_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("PRIORITY on stream 0", len) if stream_id.zero?
+      raise Errors::FrameSizeError.new("PRIORITY length != 5", len) if len != 5
 
       # Read priority data
       data = io.readpartial(5)
@@ -1029,38 +896,13 @@ module HTWO
     end
 
     def handle_push_promise io, len, flags, stream_id
-      # Clients MUST NOT send PUSH_PROMISE
-      # Servers receiving PUSH_PROMISE must treat as PROTOCOL_ERROR
-      io.read(len) if len > 0
-      send_goaway io, 0x1 # PROTOCOL_ERROR
-      io.close
-      :close
+      raise Errors::ProtocolError.new("PUSH_PROMISE not allowed", len)
     end
 
     def handle_continuation io, len, flags, stream_id
-      # CONTINUATION without prior HEADERS/PUSH_PROMISE is error
-      unless @expecting_continuation
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # CONTINUATION must be for the same stream
-      if stream_id != @continuation_stream_id
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
-
-      # CONTINUATION with stream_id = 0 is error
-      if stream_id.zero?
-        io.read(len) if len > 0
-        send_goaway io, 0x1 # PROTOCOL_ERROR
-        io.close
-        return :close
-      end
+      raise Errors::ProtocolError.new("Unexpected CONTINUATION", len) unless @expecting_continuation
+      raise Errors::ProtocolError.new("CONTINUATION stream mismatch", len) if stream_id != @continuation_stream_id
+      raise Errors::ProtocolError.new("CONTINUATION on stream 0", len) if stream_id.zero?
 
       payload = io.read(len)
       return unless payload
@@ -1080,13 +922,7 @@ module HTWO
         @continuation_stream_id = nil
         @continuation_flags = nil
 
-        begin
-          headers = @decoding_table.decode complete_payload
-        rescue CompressionError
-          send_goaway io, 0x9 # COMPRESSION_ERROR
-          io.close
-          return :close
-        end
+        headers = @decoding_table.decode complete_payload
 
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
