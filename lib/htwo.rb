@@ -489,7 +489,7 @@ module HTWO
       else
         # Read pad length
         return unless len > 0
-        pad_length = io.read(1).unpack1("C")
+        pad_length = io.readbyte
 
         # Validate pad length
         if pad_length >= len
@@ -631,7 +631,7 @@ module HTWO
       else
         # Has padding
         return if len.zero?
-        pad_length = io.read(1).unpack1("C")
+        pad_length = io.readbyte
 
         # Validate pad length (must account for priority data if present)
         min_len = 1 + priority_bytes # pad_length byte + priority bytes
