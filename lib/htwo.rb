@@ -219,7 +219,7 @@ module HTWO
 
     private
 
-    def validate_headers io, headers, stream_id, is_trailer
+    def validate_headers headers, stream_id, is_trailer
       # Track pseudo-headers and regular headers
       pseudo_headers = {}
       seen_regular_header = false
@@ -228,77 +228,33 @@ module HTWO
       forbidden_headers = %w[connection keep-alive proxy-connection transfer-encoding upgrade]
 
       headers.each do |name, value|
-        # Check for uppercase letters
-        if name =~ /[A-Z]/
-          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-          return false
-        end
+        raise Errors::StreamError.new("Uppercase header name", stream_id) if name =~ /[A-Z]/
 
         if name.start_with?(":")
-          # Pseudo-header
-          if is_trailer
-            # Pseudo-headers not allowed in trailers
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
-
-          if seen_regular_header
-            # Pseudo-headers must come before regular headers
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
-
-          # Check for duplicate pseudo-headers
-          if pseudo_headers.key?(name)
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
+          raise Errors::StreamError.new("Pseudo-header in trailers", stream_id) if is_trailer
+          raise Errors::StreamError.new("Pseudo-header after regular header", stream_id) if seen_regular_header
+          raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers.key?(name)
           pseudo_headers[name] = value
 
-          # Validate known pseudo-headers
           unless %w[:method :scheme :path :authority :status].include?(name)
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
+            raise Errors::StreamError.new("Unknown pseudo-header", stream_id)
           end
 
-          # :status is for responses only
-          if @server_mode && name == ":status"
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
-
-          # :path must not be empty
-          if name == ":path" && value.empty?
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
+          raise Errors::StreamError.new("Response pseudo-header in request", stream_id) if @server_mode && name == ":status"
+          raise Errors::StreamError.new("Empty :path", stream_id) if name == ":path" && value.empty?
         else
-          # Regular header
           seen_regular_header = true
-
-          # Check for forbidden connection-specific headers
-          if forbidden_headers.include?(name.downcase)
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
-
-          # TE header only allowed with value "trailers"
-          if name.downcase == "te" && value != "trailers"
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return false
-          end
+          raise Errors::StreamError.new("Forbidden connection header", stream_id) if forbidden_headers.include?(name.downcase)
+          raise Errors::StreamError.new("Invalid TE value", stream_id) if name.downcase == "te" && value != "trailers"
         end
       end
 
       # Check required pseudo-headers for requests (server mode)
       if @server_mode && !is_trailer
         unless pseudo_headers.key?(":method") && pseudo_headers.key?(":scheme") && pseudo_headers.key?(":path")
-          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-          return false
+          raise Errors::StreamError.new("Missing required pseudo-header", stream_id)
         end
       end
-
-      true
     end
 
     def start_read_thread
@@ -351,6 +307,10 @@ module HTWO
           else
             io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
           end
+        rescue Errors::StreamError => e
+          io.read(e.remaining) if e.remaining > 0
+          send_rst_stream io, e.stream_id, e.error_code
+          @highest_stream_id = e.stream_id if e.stream_id > @highest_stream_id
         rescue Errors::ConnectionError => e
           io.read(e.remaining) if e.remaining > 0
           send_goaway io, e.error_code
@@ -507,8 +467,7 @@ module HTWO
       if stream.closed?
         raise Errors::StreamClosedError.new("DATA on closed stream", 0)
       elsif stream.half_closed_remote?
-        send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
-        return
+        raise Errors::StreamClosed.new("DATA on half-closed-remote stream", stream_id)
       end
 
       if chunk && chunk.bytesize > 0
@@ -522,8 +481,7 @@ module HTWO
         # Validate content-length if specified
         if stream.content_length && stream.data
           if stream.data.bytesize != stream.content_length
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return
+            raise Errors::StreamError.new("Content-length mismatch", stream_id)
           end
         end
 
@@ -557,10 +515,7 @@ module HTWO
 
       # Check MAX_CONCURRENT_STREAMS limit for new streams
       if !@streams.key?(stream_id) && @open_stream_count >= @local_max_concurrent_streams
-        io.read(len) if len > 0
-        send_rst_stream io, stream_id, 0x7 # REFUSED_STREAM
-        @highest_stream_id = stream_id if stream_id > @highest_stream_id
-        return
+        raise Errors::RefusedStream.new("Max concurrent streams exceeded", stream_id, len)
       end
 
       # Check stream state
@@ -568,30 +523,20 @@ module HTWO
       if stream
         # Check if receiving second HEADERS without END_STREAM (trailers must have END_STREAM)
         if stream.headers && !flags[0].positive?
-          # Receiving second HEADERS without END_STREAM is error
-          io.read(len) if len > 0
-          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-          return
+          raise Errors::StreamError.new("Second HEADERS without END_STREAM", stream_id, len)
         end
 
         # Stream exists - validate state allows HEADERS
         if stream.closed?
-          # Receiving HEADERS on closed stream
-          io.read(len) if len > 0
-
           # If stream was closed with RST_STREAM, send RST_STREAM (stream error)
           # If closed with END_STREAM, send GOAWAY (connection error)
           if stream.rst_received
-            send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
-            return
+            raise Errors::StreamClosed.new("HEADERS on RST closed stream", stream_id, len)
           else
-            raise Errors::StreamClosedError.new("HEADERS on closed stream", 0)
+            raise Errors::StreamClosedError.new("HEADERS on closed stream", len)
           end
         elsif stream.half_closed_remote?
-          # Already received END_STREAM, can't receive more HEADERS
-          io.read(len) if len > 0
-          send_rst_stream io, stream_id, 0x5 # STREAM_CLOSED
-          return
+          raise Errors::StreamClosed.new("HEADERS on half-closed-remote stream", stream_id, len)
         end
       end
 
@@ -619,8 +564,7 @@ module HTWO
           stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
           # Check for self-dependency
           if stream_dependency == stream_id
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return
+            raise Errors::StreamError.new("HEADERS self-dependency", stream_id)
           end
 
           # Remove priority data from payload
@@ -650,10 +594,8 @@ module HTWO
           stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
           # Check for self-dependency
           if stream_dependency == stream_id
-            # Read and discard remaining data
             io.read(pad_length) if pad_length > 0
-            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-            return
+            raise Errors::StreamError.new("HEADERS self-dependency", stream_id)
           end
           # Remove priority data from payload
           payload_start = 5
@@ -680,7 +622,7 @@ module HTWO
 
         # Validate headers
         is_trailer = stream.headers ? true : false
-        return unless validate_headers(io, headers, stream_id, is_trailer)
+        validate_headers headers, stream_id, is_trailer
 
         # Transition state: idle -> open
         if stream.idle?
@@ -703,8 +645,7 @@ module HTWO
           # Validate content-length before closing
           if stream.content_length && stream.data
             if stream.data.bytesize != stream.content_length
-              send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-              return
+              raise Errors::StreamError.new("Content-length mismatch", stream_id)
             end
           end
 
@@ -838,8 +779,7 @@ module HTWO
         if stream_ident.zero?
           raise Errors::ProtocolError.new("WINDOW_UPDATE increment 0 on connection", 0)
         else
-          send_rst_stream io, stream_ident, 0x1 # PROTOCOL_ERROR
-          return
+          raise Errors::StreamError.new("WINDOW_UPDATE increment 0 on stream", stream_ident)
         end
       end
 
@@ -855,8 +795,7 @@ module HTWO
 
         # Check for overflow
         if stream.window_size > 0x7FFF_FFFF
-          send_rst_stream io, stream_ident, 0x3 # FLOW_CONTROL_ERROR
-          return
+          raise Errors::StreamError.new("Stream window overflow", stream_ident, 0, 0x3)
         end
 
         # Flush pending data if window opened up
@@ -894,12 +833,8 @@ module HTWO
 
       # Check for self-dependency
       if stream_dependency == stream_id
-        # Send RST_STREAM for this stream
-        send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
-        return
+        raise Errors::StreamError.new("PRIORITY self-dependency", stream_id)
       end
-
-      # Otherwise, we just ignore priority info for now
     end
 
     def handle_push_promise io, len, flags, stream_id
@@ -935,7 +870,7 @@ module HTWO
 
         # Validate headers
         is_trailer = stream.headers ? true : false
-        return unless validate_headers(io, headers, stream_id, is_trailer)
+        validate_headers headers, stream_id, is_trailer
 
         # Transition state: idle -> open
         if stream.idle?

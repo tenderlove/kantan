@@ -43,5 +43,28 @@ module HTWO
         super(msg, remaining, 0x9)
       end
     end
+
+    class StreamError < Error
+      attr_reader :stream_id, :error_code, :remaining
+
+      def initialize msg, stream_id, remaining = 0, error_code = 0x1
+        super(msg)
+        @stream_id = stream_id
+        @remaining = remaining
+        @error_code = error_code
+      end
+    end
+
+    class StreamClosed < StreamError
+      def initialize msg, stream_id, remaining = 0
+        super(msg, stream_id, remaining, 0x5)
+      end
+    end
+
+    class RefusedStream < StreamError
+      def initialize msg, stream_id, remaining = 0
+        super(msg, stream_id, remaining, 0x7)
+      end
+    end
   end
 end
