@@ -245,6 +245,7 @@ module HTWO
       # Track pseudo-headers and regular headers
       pseudo_headers = {}
       seen_regular_header = false
+      content_length = nil
 
       # Connection-specific headers that are not allowed
       forbidden_headers = %w[connection keep-alive proxy-connection transfer-encoding upgrade]
@@ -268,6 +269,7 @@ module HTWO
           seen_regular_header = true
           raise Errors::StreamError.new("Forbidden connection header", stream_id) if forbidden_headers.include?(name.downcase)
           raise Errors::StreamError.new("Invalid TE value", stream_id) if name.downcase == "te" && value != "trailers"
+          content_length = value.to_i if name == "content-length"
         end
       end
 
@@ -277,6 +279,8 @@ module HTWO
           raise Errors::StreamError.new("Missing required pseudo-header", stream_id)
         end
       end
+
+      content_length
     end
 
     def start_read_thread
@@ -606,7 +610,7 @@ module HTWO
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
         # Validate headers
-        validate_headers headers, stream_id, !!stream.headers
+        stream.content_length = validate_headers headers, stream_id, !!stream.headers
 
         # Transition state: idle -> open
         if stream.idle?
@@ -615,12 +619,6 @@ module HTWO
         end
 
         stream.headers = headers
-
-        # Extract content-length if present
-        content_length_header = headers.find { |k, v| k == "content-length" }
-        if content_length_header
-          stream.content_length = content_length_header[1].to_i
-        end
 
         @handler.on_headers stream
 
@@ -744,7 +742,7 @@ module HTWO
       raise Errors::FrameSizeError.new("GOAWAY too short", len) if len < 8
 
       buff = "\0".b * 4
-      last_stream_id = io.read(4, buff).unpack1("N") & 0x7FFF_FFF
+      last_stream_id = io.read(4, buff).unpack1("N") & 0x7FFF_FFFF
       error_code = io.read(4, buff).unpack1("N")
 
       # Read optional debug data
@@ -853,8 +851,7 @@ module HTWO
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
         # Validate headers
-        is_trailer = stream.headers ? true : false
-        validate_headers headers, stream_id, is_trailer
+        stream.content_length = validate_headers headers, stream_id, !!stream.headers
 
         # Transition state: idle -> open
         if stream.idle?
