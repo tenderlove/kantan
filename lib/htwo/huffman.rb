@@ -166,6 +166,7 @@ module HTWO
       result = ""
       pos = 0
       finish = offset + length
+      padding_bits = 0
 
       while offset < finish
         byte = data.getbyte(offset)
@@ -177,12 +178,26 @@ module HTWO
 
           if pos < 0
             sym = -pos - 1
-            return result if sym == 256  # EOS
+            # EOS symbol must not appear in encoded data
+            raise Errors::CompressionError, "EOS in Huffman data" if sym == 256
             result << sym
             pos = 0
+            padding_bits = 0
+          else
+            padding_bits += 1
           end
           i += 1
         end
+      end
+
+      # Padding must be at most 7 bits
+      raise Errors::CompressionError, "Huffman padding > 7 bits" if padding_bits > 7
+
+      # Padding must be the most significant bits of EOS (all 1s)
+      if padding_bits > 0
+        last_byte = data.getbyte(finish - 1)
+        mask = (1 << padding_bits) - 1
+        raise Errors::CompressionError, "Huffman padding not EOS" if (last_byte & mask) != mask
       end
 
       result

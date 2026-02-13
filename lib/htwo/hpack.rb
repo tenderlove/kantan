@@ -39,7 +39,9 @@ module HTWO
       end
 
       def lookup idx
-        @entries[idx - 62]
+        @entries.fetch(idx - 62)
+      rescue IndexError
+        raise Errors::CompressionError, "invalid dynamic table index #{idx}"
       end
 
       def resize new_max
@@ -130,6 +132,7 @@ module HTWO
 
     def initialize table_size = 4096
       @dynamic_table = DynamicTable.new(table_size)
+      @max_table_size = table_size
     end
 
     def encode headers
@@ -172,11 +175,13 @@ module HTWO
 
     def decode buffer, pos = 0, final = buffer.bytesize
       headers = []
+      seen_header = false
 
       while pos < final
         byte = buffer.getbyte(pos)
         pos += 1
         if byte[7].positive?
+          seen_header = true
           idx = byte & 0x7F
           if idx == 127
             remainder, pos = buffer.unpack("R^", offset: pos)
@@ -184,6 +189,7 @@ module HTWO
           end
           headers << lookup(idx)
         elsif byte[6].positive?
+          seen_header = true
           name_idx = byte & 0x3F
           if name_idx == 63
             remainder, pos = buffer.unpack("R^", offset: pos)
@@ -227,13 +233,16 @@ module HTWO
           headers << [name, value]
           @dynamic_table.add(name, value)
         elsif byte[5].positive?  # Dynamic table size update
+          raise Errors::CompressionError, "table size update after headers" if seen_header
           new_size = byte & 0x1F
           if new_size == 31
             remainder, pos = buffer.unpack("R^", offset: pos)
             new_size = 31 + remainder
           end
+          raise Errors::CompressionError, "table size exceeds SETTINGS" if new_size > @max_table_size
           @dynamic_table.resize(new_size)
         else
+          seen_header = true
           never_indexed = byte & 0xF0 == 0x10
           name_idx = byte & 0x0F
           if name_idx == 15
@@ -316,6 +325,8 @@ module HTWO
     end
 
     def lookup idx
+      raise Errors::CompressionError, "index 0 is invalid" if idx.zero?
+
       if idx < 62 # STATIC_TABLE.length + 1
         STATIC_TABLE[idx - 1]
       else
