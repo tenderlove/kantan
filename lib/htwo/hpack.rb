@@ -170,11 +170,10 @@ module HTWO
       out
     end
 
-    def decode buffer
+    def decode buffer, pos = 0, final = buffer.bytesize
       headers = []
-      pos = 0
 
-      while pos < buffer.bytesize
+      while pos < final
         byte = buffer.getbyte(pos)
         pos += 1
         if byte[7].positive?

@@ -599,11 +599,17 @@ module HTWO
       has_priority = flags[5].positive?
       priority_bytes = has_priority ? 5 : 0
 
+      payload = "".b
+      payload_start = 0
+      payload_len = 0
+
       # Check for PADDED flag (bit 3)
       if flags[3].zero?
         # No padding
-        payload = io.read(len)
-        return unless payload
+        if len > 0
+          payload = io.read(len)
+          payload_len = len
+        end
 
         # If PRIORITY flag set, validate and extract priority data
         if has_priority
@@ -616,8 +622,10 @@ module HTWO
             send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return
           end
+
           # Remove priority data from payload
-          payload = payload[5..-1] || "".b
+          payload_start = 5
+          payload_len -= 5
         end
       else
         # Has padding
@@ -632,10 +640,13 @@ module HTWO
 
         # Read header block (excluding pad length byte, priority, and padding)
         data_len = len - pad_length - 1
-        payload = io.read(data_len) if data_len > 0
+        if data_len > 0
+          payload = io.read(data_len)
+          payload_len = data_len
+        end
 
         # If PRIORITY flag set, validate and extract priority data
-        if has_priority && payload && payload.bytesize >= 5
+        if has_priority && payload.bytesize >= 5
           stream_dependency = payload.unpack1("N") & 0x7FFF_FFFF
           # Check for self-dependency
           if stream_dependency == stream_id
@@ -645,7 +656,8 @@ module HTWO
             return
           end
           # Remove priority data from payload
-          payload = payload[5..-1] || "".b
+          payload_start = 5
+          payload_len -= 5
         end
 
         # Read and discard padding
@@ -657,7 +669,7 @@ module HTWO
 
       if end_headers
         # Complete header block in this frame
-        headers = @decoding_table.decode payload
+        headers = @decoding_table.decode payload, payload_start, payload_len
 
         # Update highest stream ID seen
         if stream_id > @highest_stream_id
@@ -913,7 +925,7 @@ module HTWO
         @continuation_stream_id = nil
         @continuation_flags = nil
 
-        headers = @decoding_table.decode complete_payload
+        headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize
 
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
