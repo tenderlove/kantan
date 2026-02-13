@@ -97,5 +97,26 @@ module HTWO
         decoder.decode "\x00".b
       end
     end
+
+    def test_max_list_size_exceeded
+      encoder = HTWO::HPACK.new
+      decoder = HTWO::HPACK.new
+
+      # Each header entry costs name.bytesize + value.bytesize + 32
+      # ":method" (7) + "GET" (3) + 32 = 42
+      # ":path" (5) + "/" (1) + 32 = 38
+      # Total = 80
+      headers = [[":method", "GET"], [":path", "/"]]
+      encoded = encoder.encode(headers)
+
+      # Limit below total size should raise
+      assert_raises HTWO::Errors::CompressionError do
+        decoder.decode encoded, max_list_size: 50
+      end
+
+      # Limit at or above total size should succeed
+      decoder2 = HTWO::HPACK.new
+      assert_equal headers, decoder2.decode(encoded, max_list_size: 80)
+    end
   end
 end

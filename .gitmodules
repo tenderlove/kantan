@@ -1,3 +1,6 @@
 [submodule "test/fixtures/hpack-test-case"]
 	path = test/fixtures/hpack-test-case
 	url = https://github.com/http2jp/hpack-test-case.git
+[submodule "h2spec"]
+	path = h2spec
+	url = https://github.com/summerwind/h2spec.git

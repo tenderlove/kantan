@@ -173,8 +173,9 @@ module HTWO
       out
     end
 
-    def decode buffer, pos = 0, final = buffer.bytesize
+    def decode buffer, pos = 0, final = buffer.bytesize, max_list_size: nil
       headers = []
+      list_size = 0
       seen_header = false
 
       while pos < final
@@ -187,7 +188,12 @@ module HTWO
             remainder, pos = buffer.unpack("R^", offset: pos)
             idx = 127 + remainder
           end
-          headers << lookup(idx)
+          entry = lookup(idx)
+          if max_list_size
+            list_size += entry[0].bytesize + entry[1].bytesize + 32
+            raise Errors::CompressionError, "header list too large" if list_size > max_list_size
+          end
+          headers << entry
         elsif byte[6].positive?
           seen_header = true
           name_idx = byte & 0x3F
@@ -230,6 +236,10 @@ module HTWO
           end
           pos += len
 
+          if max_list_size
+            list_size += name.bytesize + value.bytesize + 32
+            raise Errors::CompressionError, "header list too large" if list_size > max_list_size
+          end
           headers << [name, value]
           @dynamic_table.add(name, value)
         elsif byte[5].positive?  # Dynamic table size update
@@ -283,6 +293,10 @@ module HTWO
           end
           pos += len
 
+          if max_list_size
+            list_size += name.bytesize + value.bytesize + 32
+            raise Errors::CompressionError, "header list too large" if list_size > max_list_size
+          end
           headers << [name, value]
         end
       end

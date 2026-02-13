@@ -141,6 +141,8 @@ module HTWO
     HEADER_BUFF = ("\0".b * 9).freeze
     private_constant :HEADER_BUFF
 
+    MAX_HEADER_LIST_SIZE = 65536
+
     CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b.freeze
 
     attr_reader :io
@@ -182,27 +184,39 @@ module HTWO
       @server_mode = nil
     end
 
-    def request headers, body: nil
+    def new_stream
       stream_id = @next_stream_id
       @next_stream_id += 2
       stream = Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
       @streams[stream_id] = stream
+      stream_id
+    end
 
+    def send_headers stream_id, headers, has_body: false
       hpack = @encoding_table.encode headers
       len = hpack.bytesize
       len_type = (len << 8) | 0x1
 
       flags = 0x04 # END_HEADERS
-      flags |= 0x01 unless body # END_STREAM if no body
+      flags |= 0x01 unless has_body # END_STREAM if no body
 
       io.write [len_type, flags, stream_id].pack("NCN")
       io.write hpack
       io.flush
+    end
 
-      if body
-        body = body.b if body.encoding != Encoding::BINARY
-        send_data_with_flow_control stream, body
-      end
+    def send_body stream_id, body
+      stream = @streams.fetch stream_id
+      body = body.b if body.encoding != Encoding::BINARY
+      send_data_with_flow_control stream, body
+    end
+
+    def request headers, body: nil
+      stream_id = self.new_stream
+
+      send_headers stream_id, headers, has_body: body
+
+      send_headers stream_id, body if body
 
       stream_id
     end
@@ -349,7 +363,6 @@ module HTWO
       io.write data
     end
 
-
     def send_settings io, settings
       if settings
         raise NotImplementedError
@@ -377,6 +390,10 @@ module HTWO
         send_data_with_flow_control stream, body
       else
         stream.half_close_local!
+        if stream.closed?
+          @streams.delete(stream.id)
+          @open_stream_count -= 1
+        end
       end
     end
 
@@ -412,6 +429,10 @@ module HTWO
       end
 
       stream.half_close_local!
+      if stream.closed?
+        @streams.delete(stream.id)
+        @open_stream_count -= 1
+      end
     end
 
     private
@@ -471,7 +492,13 @@ module HTWO
       stream = @streams[stream_id]
 
       # If stream doesn't exist or is in idle state, send error
-      if !stream || stream.idle?
+      if !stream
+        if stream_id <= @highest_stream_id
+          raise Errors::StreamClosedError.new("DATA on closed stream", 0)
+        else
+          raise Errors::ProtocolError.new("Invalid stream", 0)
+        end
+      elsif stream.idle?
         raise Errors::ProtocolError.new("Invalid stream", 0)
       end
 
@@ -499,6 +526,10 @@ module HTWO
 
         stream.half_close_remote!
         @handler.on_request stream
+        if stream.closed?
+          @streams.delete(stream_id)
+          @open_stream_count -= 1
+        end
       end
     end
 
@@ -601,7 +632,7 @@ module HTWO
 
       if end_headers
         # Complete header block in this frame
-        headers = @decoding_table.decode payload, payload_start, payload_len
+        headers = @decoding_table.decode payload, payload_start, payload_len, max_list_size: MAX_HEADER_LIST_SIZE
 
         # Update highest stream ID seen
         if stream_id > @highest_stream_id
@@ -634,6 +665,10 @@ module HTWO
 
           stream.half_close_remote!
           @handler.on_request stream
+          if stream.closed?
+            @streams.delete(stream_id)
+            @open_stream_count -= 1
+          end
         end
       else
         # Partial header block, expect CONTINUATION
@@ -770,7 +805,15 @@ module HTWO
         raise Errors::FlowControlError.new("Connection window overflow", 0) if @window_size > 0x7FFF_FFFF
       else
         stream = @streams[stream_ident]
-        raise Errors::ProtocolError.new("WINDOW_UPDATE on idle stream", 0) if !stream || stream.idle?
+        if !stream
+          if stream_ident <= @highest_stream_id
+            return # Stream already closed, ignore
+          else
+            raise Errors::ProtocolError.new("WINDOW_UPDATE on idle stream", 0)
+          end
+        elsif stream.idle?
+          raise Errors::ProtocolError.new("WINDOW_UPDATE on idle stream", 0)
+        end
 
         stream.window_size ||= 65535
         stream.window_size += increment
@@ -797,11 +840,21 @@ module HTWO
 
       # Validate stream state - RST_STREAM on idle stream is PROTOCOL_ERROR
       stream = @streams[stream_id]
-      raise Errors::ProtocolError.new("RST_STREAM on idle stream", 0) if !stream || stream.idle?
+      if !stream
+        if stream_id <= @highest_stream_id
+          return # Stream already closed, ignore per RFC
+        else
+          raise Errors::ProtocolError.new("RST_STREAM on idle stream", 0)
+        end
+      elsif stream.idle?
+        raise Errors::ProtocolError.new("RST_STREAM on idle stream", 0)
+      end
 
       # Close the stream and mark that RST_STREAM was received
       stream.rst_received = true
       stream.close!
+      @streams.delete(stream_id)
+      @open_stream_count -= 1
     end
 
     def handle_priority io, len, flags, stream_id
@@ -847,7 +900,7 @@ module HTWO
         @continuation_stream_id = nil
         @continuation_flags = nil
 
-        headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize
+        headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize, max_list_size: MAX_HEADER_LIST_SIZE
 
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
@@ -867,6 +920,10 @@ module HTWO
         if saved_flags[0].positive?
           stream.half_close_remote!
           @handler.on_request stream
+          if stream.closed?
+            @streams.delete(stream_id)
+            @open_stream_count -= 1
+          end
         end
       end
       # Otherwise, keep expecting more CONTINUATION frames
