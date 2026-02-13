@@ -193,6 +193,8 @@ module HTWO
     end
 
     def send_headers stream_id, headers, has_body: false
+      stream = @streams.fetch(stream_id)
+
       hpack = @encoding_table.encode headers
       len = hpack.bytesize
       len_type = (len << 8) | 0x1
@@ -203,6 +205,19 @@ module HTWO
       io.write [len_type, flags, stream_id].pack("NCN")
       io.write hpack
       io.flush
+
+      if stream.idle?
+        stream.open!
+        @open_stream_count += 1
+      end
+
+      unless has_body
+        stream.half_close_local!
+        if stream.closed?
+          @streams.delete(stream_id)
+          @open_stream_count -= 1
+        end
+      end
     end
 
     def send_body stream_id, body
