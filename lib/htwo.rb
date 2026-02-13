@@ -335,28 +335,19 @@ module HTWO
           end
 
           case type
-          when 0x0 # data
-            break if handle_data(io, len, flags, stream_ident) == :close
-          when 0x1 # headers
-            break if handle_headers(io, len, flags, stream_ident) == :close
-          when 0x2 # priority
-            break if handle_priority(io, len, flags, stream_ident) == :close
-          when 0x3 # RST_STREAM
-            break if handle_rst_stream(io, len, flags, stream_ident) == :close
-          when 0x4 # settings
-            break if handle_settings(io, len, flags, stream_ident) == :close
-          when 0x5 # PUSH_PROMISE
-            break if handle_push_promise(io, len, flags, stream_ident) == :close
-          when 0x6 # ping
-            break if handle_ping(io, len, flags, stream_ident) == :close
-          when 0x7 # goaway
+          when 0x0 then handle_data io, len, flags, stream_ident
+          when 0x1 then handle_headers io, len, flags, stream_ident
+          when 0x2 then handle_priority io, len, flags, stream_ident
+          when 0x3 then handle_rst_stream io, len, flags, stream_ident
+          when 0x4 then handle_settings io, len, flags, stream_ident
+          when 0x5 then handle_push_promise io, len, flags, stream_ident
+          when 0x6 then handle_ping io, len, flags, stream_ident
+          when 0x7
             handle_goaway io, len, flags, stream_ident
             io.close
             break
-          when 0x8 # window update
-            break if handle_window_update(io, len, flags, stream_ident) == :close
-          when 0x9 # CONTINUATION
-            break if handle_continuation(io, len, flags, stream_ident) == :close
+          when 0x8 then handle_window_update io, len, flags, stream_ident
+          when 0x9 then handle_continuation io, len, flags, stream_ident
           else
             io.read(len) if len > 0 # skip unknown frame types (RFC 7540 4.1)
           end
