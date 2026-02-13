@@ -116,6 +116,25 @@ module HTWO
     def close!
       self.state = :closed
     end
+
+    def receiving_headers! end_stream, remaining
+      # Second HEADERS without END_STREAM is invalid (trailers must end the stream)
+      if headers && !end_stream
+        raise Errors::StreamError.new("Second HEADERS without END_STREAM", id, remaining)
+      end
+
+      if closed?
+        # If stream was closed with RST_STREAM, send RST_STREAM (stream error)
+        # If closed with END_STREAM, send GOAWAY (connection error)
+        if rst_received
+          raise Errors::StreamClosed.new("HEADERS on RST closed stream", id, remaining)
+        else
+          raise Errors::StreamClosedError.new("HEADERS on closed stream", remaining)
+        end
+      elsif half_closed_remote?
+        raise Errors::StreamClosed.new("HEADERS on half-closed-remote stream", id, remaining)
+      end
+    end
   end
 
   class Session
@@ -271,10 +290,11 @@ module HTWO
 
       while true
         begin
-          str = io.readpartial(9, header_buff)
-        rescue IOError, EOFError, Errno::ECONNRESET
+          str = io.read(9, header_buff)
+        rescue IOError, Errno::ECONNRESET
           break
         end
+        break unless str
         len_type, flags, stream_ident = str.unpack("NCN")
         len = len_type >> 8
         type = len_type & 0xFF
@@ -492,14 +512,10 @@ module HTWO
 
     def handle_headers io, len, flags, stream_id
       # If already expecting CONTINUATION, receiving HEADERS is an error
-      if @expecting_continuation
-        raise Errors::ProtocolError.new("Already expecting continuation", 0)
-      end
+      raise Errors::ProtocolError.new("Already expecting continuation", 0) if @expecting_continuation
 
       # Validate stream ID is non-zero
-      if stream_id.zero?
-        raise Errors::ProtocolError.new("Got HEADERS on stream 0", len)
-      end
+      raise Errors::ProtocolError.new("Got HEADERS on stream 0", len) if stream_id.zero?
 
       # Validate stream ID parity (clients use odd, servers use even)
       if @server_mode && stream_id.even?
@@ -519,26 +535,7 @@ module HTWO
       end
 
       # Check stream state
-      stream = @streams[stream_id]
-      if stream
-        # Check if receiving second HEADERS without END_STREAM (trailers must have END_STREAM)
-        if stream.headers && !flags[0].positive?
-          raise Errors::StreamError.new("Second HEADERS without END_STREAM", stream_id, len)
-        end
-
-        # Stream exists - validate state allows HEADERS
-        if stream.closed?
-          # If stream was closed with RST_STREAM, send RST_STREAM (stream error)
-          # If closed with END_STREAM, send GOAWAY (connection error)
-          if stream.rst_received
-            raise Errors::StreamClosed.new("HEADERS on RST closed stream", stream_id, len)
-          else
-            raise Errors::StreamClosedError.new("HEADERS on closed stream", len)
-          end
-        elsif stream.half_closed_remote?
-          raise Errors::StreamClosed.new("HEADERS on half-closed-remote stream", stream_id, len)
-        end
-      end
+      @streams[stream_id]&.receiving_headers!(flags[0].positive?, len)
 
       # Check for PRIORITY flag (bit 5) - HEADERS can include priority data
       has_priority = flags[5].positive?
@@ -621,8 +618,7 @@ module HTWO
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings[4], false, nil, false)
 
         # Validate headers
-        is_trailer = stream.headers ? true : false
-        validate_headers headers, stream_id, is_trailer
+        validate_headers headers, stream_id, !!stream.headers
 
         # Transition state: idle -> open
         if stream.idle?
@@ -703,7 +699,7 @@ module HTWO
       old_initial_window_size = @peer_settings[4]
 
       while read < len
-        ident, value = io.readpartial(6, s).unpack("nN")
+        ident, value = io.read(6, s).unpack("nN")
 
         # Validate parameter values
         case ident
@@ -760,8 +756,8 @@ module HTWO
       raise Errors::FrameSizeError.new("GOAWAY too short", len) if len < 8
 
       buff = "\0".b * 4
-      last_stream_id = io.readpartial(4, buff).unpack1("N") & 0x7FFF_FFF
-      error_code = io.readpartial(4, buff).unpack1("N")
+      last_stream_id = io.read(4, buff).unpack1("N") & 0x7FFF_FFF
+      error_code = io.read(4, buff).unpack1("N")
 
       # Read optional debug data
       if len > 8
@@ -772,7 +768,7 @@ module HTWO
     def handle_window_update io, len, flags, stream_ident
       raise Errors::FrameSizeError.new("WINDOW_UPDATE length != 4", len) unless len == 4
 
-      increment = io.readpartial(4).unpack1("N") & 0x7FFF_FFFF
+      increment = io.read(4).unpack1("N") & 0x7FFF_FFFF
 
       # Increment must be non-zero
       if increment.zero?
@@ -810,7 +806,7 @@ module HTWO
       raise Errors::ProtocolError.new("RST_STREAM on stream 0", len) if stream_id.zero?
       raise Errors::FrameSizeError.new("RST_STREAM length != 4", len) if len != 4
 
-      error_code = io.readpartial(4).unpack1("N")
+      error_code = io.read(4).unpack1("N")
 
       # Validate stream state - RST_STREAM on idle stream is PROTOCOL_ERROR
       stream = @streams[stream_id]
@@ -826,7 +822,7 @@ module HTWO
       raise Errors::FrameSizeError.new("PRIORITY length != 5", len) if len != 5
 
       # Read priority data
-      data = io.readpartial(5)
+      data = io.read(5)
       stream_dependency = data.unpack1("N") & 0x7FFF_FFFF
       # exclusive = (data.unpack1("N") & 0x8000_0000) != 0
       # weight = data[4].unpack1("C")
@@ -889,6 +885,7 @@ module HTWO
       end
       # Otherwise, keep expecting more CONTINUATION frames
     end
+
   end
 
   class ClientHandler < Handler
