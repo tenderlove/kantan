@@ -219,7 +219,7 @@ module HTWO
 
     private
 
-    def validate_headers headers, stream_id, is_trailer
+    def validate_headers io, headers, stream_id, is_trailer
       # Track pseudo-headers and regular headers
       pseudo_headers = {}
       seen_regular_header = false
@@ -230,7 +230,7 @@ module HTWO
       headers.each do |name, value|
         # Check for uppercase letters
         if name =~ /[A-Z]/
-          send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
           return false
         end
 
@@ -238,38 +238,38 @@ module HTWO
           # Pseudo-header
           if is_trailer
             # Pseudo-headers not allowed in trailers
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
 
           if seen_regular_header
             # Pseudo-headers must come before regular headers
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
 
           # Check for duplicate pseudo-headers
           if pseudo_headers.key?(name)
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
           pseudo_headers[name] = value
 
           # Validate known pseudo-headers
           unless %w[:method :scheme :path :authority :status].include?(name)
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
 
           # :status is for responses only
           if @server_mode && name == ":status"
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
 
           # :path must not be empty
           if name == ":path" && value.empty?
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
         else
@@ -278,13 +278,13 @@ module HTWO
 
           # Check for forbidden connection-specific headers
           if forbidden_headers.include?(name.downcase)
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
 
           # TE header only allowed with value "trailers"
           if name.downcase == "te" && value != "trailers"
-            send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+            send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
             return false
           end
         end
@@ -293,7 +293,7 @@ module HTWO
       # Check required pseudo-headers for requests (server mode)
       if @server_mode && !is_trailer
         unless pseudo_headers.key?(":method") && pseudo_headers.key?(":scheme") && pseudo_headers.key?(":path")
-          send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+          send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
           return false
         end
       end
@@ -680,7 +680,7 @@ module HTWO
 
         # Validate headers
         is_trailer = stream.headers ? true : false
-        return unless validate_headers(headers, stream_id, is_trailer)
+        return unless validate_headers(io, headers, stream_id, is_trailer)
 
         # Transition state: idle -> open
         if stream.idle?
@@ -703,7 +703,7 @@ module HTWO
           # Validate content-length before closing
           if stream.content_length && stream.data
             if stream.data.bytesize != stream.content_length
-              send_rst_stream @io, stream_id, 0x1 # PROTOCOL_ERROR
+              send_rst_stream io, stream_id, 0x1 # PROTOCOL_ERROR
               return
             end
           end
@@ -715,7 +715,11 @@ module HTWO
         # Partial header block, expect CONTINUATION
         @expecting_continuation = true
         @continuation_stream_id = stream_id
-        @header_buffer = payload.dup
+        if payload_start > 0
+          @header_buffer = payload.byteslice(payload_start, payload_len)
+        else
+          @header_buffer = payload
+        end
         @continuation_flags = flags # Save flags from HEADERS frame
 
         # Update highest stream ID seen
@@ -931,7 +935,7 @@ module HTWO
 
         # Validate headers
         is_trailer = stream.headers ? true : false
-        return unless validate_headers(headers, stream_id, is_trailer)
+        return unless validate_headers(io, headers, stream_id, is_trailer)
 
         # Transition state: idle -> open
         if stream.idle?
