@@ -270,7 +270,78 @@ module HTWO
       send_ping io, [ts].pack("Q>")
     end
 
+    def send_response stream, headers, body
+      hpack = @encoding_table.encode headers
+      len = hpack.bytesize
+      len_type = (len << 8) | 0x1
+
+      flags = 0x04 # END_HEADERS
+      flags |= 0x01 unless body # END_STREAM if no body
+
+      io.write [len_type, flags, stream.id].pack("NCN")
+      io.write hpack
+      io.flush
+
+      if body
+        body = body.b if body.encoding != Encoding::BINARY
+        send_data_with_flow_control stream, body
+      else
+        stream.half_close_local!
+        if stream.closed?
+          @streams.delete(stream.id)
+          @open_stream_count -= 1
+        end
+      end
+    end
+
     private
+
+    def send_data_with_flow_control stream, body
+      offset = 0
+      remaining = body.bytesize
+
+      while remaining > 0
+        max_frame = @peer_settings[5] # MAX_FRAME_SIZE
+        send_size = [remaining, max_frame, stream.window_size, @window_size].min
+
+        # If window is exhausted, buffer remaining data
+        if send_size <= 0
+          pending = body.byteslice(offset, remaining)
+          if @pending_body_size + pending.bytesize > MAX_PENDING_BODY_SIZE
+            send_rst_stream io, stream.id, 0x7 # REFUSED_STREAM
+            stream.close!
+            @streams.delete(stream.id)
+            @open_stream_count -= 1
+            return
+          end
+          @pending_body_size += pending.bytesize
+          stream.pending_body = pending
+          return
+        end
+
+        chunk = body.byteslice(offset, send_size)
+        is_last = (offset + send_size) >= body.bytesize
+
+        len = chunk.bytesize
+        len_type = (len << 8) | 0x0
+        flags = is_last ? 0x01 : 0x00 # END_STREAM on last chunk
+
+        io.write [len_type, flags, stream.id].pack("NCN")
+        io.write chunk
+        io.flush
+
+        stream.window_size -= len
+        @window_size -= len
+        offset += send_size
+        remaining -= send_size
+      end
+
+      stream.half_close_local!
+      if stream.closed?
+        @streams.delete(stream.id)
+        @open_stream_count -= 1
+      end
+    end
 
     def validate_headers headers, stream_id, is_trailer
       # Track pseudo-headers and regular headers
@@ -389,81 +460,6 @@ module HTWO
         io.write Frames::Settings::DEFAULT_ENCODED
       end
     end
-
-    public
-
-    def send_response stream, headers, body
-      hpack = @encoding_table.encode headers
-      len = hpack.bytesize
-      len_type = (len << 8) | 0x1
-
-      flags = 0x04 # END_HEADERS
-      flags |= 0x01 unless body # END_STREAM if no body
-
-      io.write [len_type, flags, stream.id].pack("NCN")
-      io.write hpack
-      io.flush
-
-      if body
-        body = body.b if body.encoding != Encoding::BINARY
-        send_data_with_flow_control stream, body
-      else
-        stream.half_close_local!
-        if stream.closed?
-          @streams.delete(stream.id)
-          @open_stream_count -= 1
-        end
-      end
-    end
-
-    def send_data_with_flow_control stream, body
-      offset = 0
-      remaining = body.bytesize
-
-      while remaining > 0
-        max_frame = @peer_settings[5] # MAX_FRAME_SIZE
-        send_size = [remaining, max_frame, stream.window_size, @window_size].min
-
-        # If window is exhausted, buffer remaining data
-        if send_size <= 0
-          pending = body.byteslice(offset, remaining)
-          if @pending_body_size + pending.bytesize > MAX_PENDING_BODY_SIZE
-            send_rst_stream io, stream.id, 0x7 # REFUSED_STREAM
-            stream.close!
-            @streams.delete(stream.id)
-            @open_stream_count -= 1
-            return
-          end
-          @pending_body_size += pending.bytesize
-          stream.pending_body = pending
-          return
-        end
-
-        chunk = body.byteslice(offset, send_size)
-        is_last = (offset + send_size) >= body.bytesize
-
-        len = chunk.bytesize
-        len_type = (len << 8) | 0x0
-        flags = is_last ? 0x01 : 0x00 # END_STREAM on last chunk
-
-        io.write [len_type, flags, stream.id].pack("NCN")
-        io.write chunk
-        io.flush
-
-        stream.window_size -= len
-        @window_size -= len
-        offset += send_size
-        remaining -= send_size
-      end
-
-      stream.half_close_local!
-      if stream.closed?
-        @streams.delete(stream.id)
-        @open_stream_count -= 1
-      end
-    end
-
-    private
 
     def send_goaway io, error
       len = 8
