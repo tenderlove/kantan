@@ -152,10 +152,10 @@ module HTWO
       @io = io
       @handler = handler
 
-      # Table used to encode values sent to the peer
+      # Table used to encode values sent to the peer (owned by write thread)
       @encoding_table = HPACK.new
 
-      # Table used to decode values sent by the peer
+      # Table used to decode values sent by the peer (owned by read thread)
       @decoding_table = HPACK.new
 
       @peer_settings = [
@@ -168,7 +168,8 @@ module HTWO
         -1,    # max header list size (-1 for not set)
       ]
 
-      @window_size = 65535
+      @connection_window = 65535
+      @write_queue = Thread::Queue.new
       @next_stream_id = 1
       @streams = {}
       @highest_stream_id = 0 # Track highest stream ID seen from peer
@@ -195,153 +196,64 @@ module HTWO
     end
 
     def send_headers stream_id, headers, has_body: false
-      stream = @streams.fetch(stream_id)
-
-      hpack = @encoding_table.encode headers
-      len = hpack.bytesize
-      len_type = (len << 8) | 0x1
-
-      flags = 0x04 # END_HEADERS
-      flags |= 0x01 unless has_body # END_STREAM if no body
-
-      io.write [len_type, flags, stream_id].pack("NCN")
-      io.write hpack
-      io.flush
-
-      if stream.idle?
-        stream.open!
-        @open_stream_count += 1
-      end
-
-      unless has_body
-        stream.half_close_local!
-        if stream.closed?
-          @streams.delete(stream_id)
-          @open_stream_count -= 1
-        end
-      end
+      @write_queue << [:headers, stream_id, headers, !has_body]
     end
 
     def send_body stream_id, body
-      stream = @streams.fetch stream_id
       body = body.b if body.encoding != Encoding::BINARY
-      send_data_with_flow_control stream, body
+      @write_queue << [:data, stream_id, body]
     end
 
     def request headers, body: nil
-      stream_id = self.new_stream
-
-      send_headers stream_id, headers, has_body: body
-
-      send_headers stream_id, body if body
-
+      stream_id = new_stream
+      send_headers stream_id, headers, has_body: !!body
+      send_body stream_id, body if body
       stream_id
     end
 
     def finish
-      send_goaway io, 0x0 # NO_ERROR
-      io.flush
-      io.close
-      @reader.join
+      @write_queue << [:goaway, 0x0]
+      @write_queue << [:shutdown]
+      @writer&.join
+      @reader&.join
     end
 
     def connect
       @server_mode = false
-      start_read_thread
       io.write CONNECTION_PREFACE
-      send_settings io, nil
+      io.write Frames::Settings::DEFAULT_ENCODED
+      start_write_thread
+      start_read_thread
     end
 
     def receive
       @server_mode = true
       preface = io.read CONNECTION_PREFACE.bytesize
       if preface != CONNECTION_PREFACE
-        send_goaway io, 0x1 # PROTOCOL_ERROR
+        send_goaway_frame 0x1 # PROTOCOL_ERROR
         io.close
         return
       end
-      send_settings io, nil
-      io.flush
+      io.write Frames::Settings::DEFAULT_ENCODED
+      start_write_thread
       start_read_thread
     end
 
     def ping
       ts = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
-      send_ping io, [ts].pack("Q>")
+      @write_queue << [:ping, [ts].pack("Q>")]
     end
 
     def send_response stream, headers, body
-      hpack = @encoding_table.encode headers
-      len = hpack.bytesize
-      len_type = (len << 8) | 0x1
-
-      flags = 0x04 # END_HEADERS
-      flags |= 0x01 unless body # END_STREAM if no body
-
-      io.write [len_type, flags, stream.id].pack("NCN")
-      io.write hpack
-      io.flush
-
+      end_stream = !body
+      @write_queue << [:headers, stream.id, headers, end_stream]
       if body
         body = body.b if body.encoding != Encoding::BINARY
-        send_data_with_flow_control stream, body
-      else
-        stream.half_close_local!
-        if stream.closed?
-          @streams.delete(stream.id)
-          @open_stream_count -= 1
-        end
+        @write_queue << [:data, stream.id, body]
       end
     end
 
     private
-
-    def send_data_with_flow_control stream, body
-      offset = 0
-      remaining = body.bytesize
-
-      while remaining > 0
-        max_frame = @peer_settings[5] # MAX_FRAME_SIZE
-        send_size = [remaining, max_frame, stream.window_size, @window_size].min
-
-        # If window is exhausted, buffer remaining data
-        if send_size <= 0
-          pending = body.byteslice(offset, remaining)
-          if @pending_body_size + pending.bytesize > MAX_PENDING_BODY_SIZE
-            send_rst_stream io, stream.id, 0x7 # REFUSED_STREAM
-            stream.close!
-            @streams.delete(stream.id)
-            @open_stream_count -= 1
-            return
-          end
-          @pending_body_size += pending.bytesize
-          stream.pending_body = pending
-          return
-        end
-
-        chunk = body.byteslice(offset, send_size)
-        is_last = (offset + send_size) >= body.bytesize
-
-        len = chunk.bytesize
-        len_type = (len << 8) | 0x0
-        flags = is_last ? 0x01 : 0x00 # END_STREAM on last chunk
-
-        io.write [len_type, flags, stream.id].pack("NCN")
-        io.write chunk
-        io.flush
-
-        stream.window_size -= len
-        @window_size -= len
-        offset += send_size
-        remaining -= send_size
-      end
-
-      stream.half_close_local!
-      if stream.closed?
-        @streams.delete(stream.id)
-        @open_stream_count -= 1
-      end
-    end
 
     def validate_headers headers, stream_id, is_trailer
       # Track pseudo-headers and regular headers
@@ -385,6 +297,189 @@ module HTWO
       content_length
     end
 
+    # ── Write thread ──────────────────────────────────────────────────────
+
+    def start_write_thread
+      @writer = Thread.new { write_loop }
+    end
+
+    def write_loop
+      while (cmd = @write_queue.pop)
+        case cmd[0]
+        when :headers
+          _, stream_id, headers, end_stream = cmd
+          stream = @streams[stream_id]
+          next unless stream
+
+          hpack = @encoding_table.encode headers
+          len = hpack.bytesize
+          len_type = (len << 8) | 0x1
+          flags = 0x04 # END_HEADERS
+          flags |= 0x01 if end_stream
+
+          io.write [len_type, flags, stream_id].pack("NCN")
+          io.write hpack
+
+
+          if stream.idle?
+            stream.open!
+            @open_stream_count += 1
+          end
+
+          if end_stream
+            stream.half_close_local!
+            if stream.closed?
+              @streams.delete(stream_id)
+              @open_stream_count -= 1
+            end
+          end
+
+        when :data
+          _, stream_id, body = cmd
+          stream = @streams[stream_id]
+          next unless stream
+
+          if stream.pending_body
+            stream.pending_body << body
+          else
+            stream.pending_body = body.dup
+          end
+          @pending_body_size += body.bytesize
+          flush_pending
+
+        when :ping
+          _, payload = cmd
+          io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
+          io.write payload
+
+        when :ping_ack
+          _, payload = cmd
+          io.write "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
+          io.write payload
+
+        when :settings_ack
+          io.write "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+
+        when :rst_stream
+          _, stream_id, error_code = cmd
+          send_rst_stream_frame stream_id, error_code
+
+        when :goaway
+          _, error_code = cmd
+          send_goaway_frame error_code
+
+        when :window_update
+          _, stream_id, increment = cmd
+          if stream_id.zero?
+            @connection_window += increment
+            if @connection_window > 0x7FFF_FFFF
+              send_goaway_frame 0x3 # FLOW_CONTROL_ERROR
+              break
+            end
+          else
+            stream = @streams[stream_id]
+            if stream
+              stream.window_size += increment
+              if stream.window_size > 0x7FFF_FFFF
+                send_rst_stream_frame stream_id, 0x3 # FLOW_CONTROL_ERROR
+                next
+              end
+            end
+          end
+          flush_pending
+
+        when :settings
+          _, settings = cmd
+          old_initial_window_size = @peer_settings[4]
+          settings.each do |ident, value|
+            @peer_settings[ident] = value if ident < @peer_settings.length
+          end
+
+          new_initial_window_size = @peer_settings[4]
+          if new_initial_window_size != old_initial_window_size
+            delta = new_initial_window_size - old_initial_window_size
+            overflow = false
+            @streams.values.each do |stream|
+              next if stream.idle? || stream.closed?
+              stream.window_size += delta
+              if stream.window_size > 0x7FFF_FFFF
+                send_goaway_frame 0x3 # FLOW_CONTROL_ERROR
+                overflow = true
+                break
+              end
+            end
+            break if overflow
+          end
+          flush_pending
+
+        when :close_stream
+          _, stream = cmd
+          if stream.pending_body
+            @pending_body_size -= stream.pending_body.bytesize
+            stream.pending_body = nil
+          end
+
+        when :shutdown
+          break
+        end
+      end
+    rescue IOError, Errno::ECONNRESET
+      # Connection closed, exit write loop
+    ensure
+      io.close rescue nil
+    end
+
+    def flush_pending
+      @streams.values.each do |stream|
+        next unless stream.pending_body
+
+        while stream.pending_body && !stream.pending_body.empty?
+          max_frame = @peer_settings[5]
+          send_size = [stream.pending_body.bytesize, max_frame, stream.window_size, @connection_window].min
+
+          if send_size <= 0
+            if @pending_body_size > MAX_PENDING_BODY_SIZE
+              send_rst_stream_frame stream.id, 0x7 # REFUSED_STREAM
+              @pending_body_size -= stream.pending_body.bytesize
+              stream.pending_body = nil
+              stream.close!
+              @streams.delete(stream.id)
+              @open_stream_count -= 1
+            end
+            break
+          end
+
+          chunk = stream.pending_body.byteslice(0, send_size)
+          remaining = stream.pending_body.bytesize - send_size
+          is_last = remaining == 0
+
+          flags = is_last ? 0x01 : 0x00
+          len_type = (chunk.bytesize << 8) | 0x0
+
+          io.write [len_type, flags, stream.id].pack("NCN")
+          io.write chunk
+
+
+          stream.window_size -= send_size
+          @connection_window -= send_size
+          @pending_body_size -= send_size
+
+          if is_last
+            stream.pending_body = nil
+            stream.half_close_local!
+            if stream.closed?
+              @streams.delete(stream.id)
+              @open_stream_count -= 1
+            end
+          else
+            stream.pending_body = stream.pending_body.byteslice(send_size..)
+          end
+        end
+      end
+    end
+
+    # ── Read thread ───────────────────────────────────────────────────────
+
     def start_read_thread
       @reader = Thread.new { read_loop }
     end
@@ -424,7 +519,6 @@ module HTWO
           when 0x6 then handle_ping io, len, flags, stream_ident
           when 0x7
             handle_goaway io, len, flags, stream_ident
-            io.close
             break
           when 0x8 then handle_window_update io, len, flags, stream_ident
           when 0x9 then handle_continuation io, len, flags, stream_ident
@@ -433,56 +527,41 @@ module HTWO
           end
         rescue Errors::StreamError => e
           io.read(e.remaining) if e.remaining > 0
-          send_rst_stream io, e.stream_id, e.error_code
+          @write_queue << [:rst_stream, e.stream_id, e.error_code]
           @highest_stream_id = e.stream_id if e.stream_id > @highest_stream_id
         rescue Errors::ConnectionError => e
           io.read(e.remaining) if e.remaining > 0
-          send_goaway io, e.error_code
-          io.close
+          @write_queue << [:goaway, e.error_code]
+          @write_queue << [:shutdown]
           break
         rescue IOError, Errno::ECONNRESET
           break
         end
       end
-
+    ensure
+      @write_queue << [:shutdown]
       @handler.on_close
     end
 
-    def send_ping io, data
-      io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
-      io.write data
-    end
+    # ── Frame writers (called only from write thread) ─────────────────────
 
-    def send_settings io, settings
-      if settings
-        raise NotImplementedError
-      else
-        io.write Frames::Settings::DEFAULT_ENCODED
-      end
-    end
-
-    def send_goaway io, error
+    def send_goaway_frame error
       len = 8
       len_type = (len << 8) | 0x7
       flags = 0
       ident = 0
       last_stream_id = @highest_stream_id
       io.write [len_type, flags, ident, last_stream_id, error].pack("NCNNN")
-      io.flush
     end
 
-    def send_settings_ack io
-      io.write "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
-      io.flush
-    end
-
-    def send_rst_stream io, stream_id, error_code
+    def send_rst_stream_frame stream_id, error_code
       len = 4
       len_type = (len << 8) | 0x3 # RST_STREAM
       flags = 0
       io.write [len_type, flags, stream_id, error_code].pack("NCNN")
-      io.flush
     end
+
+    # ── Frame handlers (called only from read thread) ─────────────────────
 
     def handle_data io, len, flags, stream_id
       # DATA frames cannot have stream_id = 0
@@ -718,9 +797,8 @@ module HTWO
 
       payload = io.read(8)
       if flags[0].zero?
-        # Peer PING: echo back with ACK flag (bit 0)
-        io.write "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
-        io.write payload
+        # Peer PING: queue ACK for write thread
+        @write_queue << [:ping_ack, payload]
       else
         # ACK of our PING: compute RTT
         sent_at = payload.unpack1("Q>")
@@ -742,7 +820,7 @@ module HTWO
 
       read = 0
       s = "\0".b * 6
-      old_initial_window_size = @peer_settings[4]
+      parsed = {}
 
       while read < len
         ident, value = io.read(6, s).unpack("nN")
@@ -763,40 +841,12 @@ module HTWO
           end
         end
 
-        @peer_settings[ident] = value if ident < @peer_settings.length
+        parsed[ident] = value
         read += 6
       end
 
-      # Apply window size updates to existing streams
-      new_initial_window_size = @peer_settings[4]
-      if new_initial_window_size != old_initial_window_size
-        delta = new_initial_window_size - old_initial_window_size
-
-        @streams.each_value do |stream|
-          next if stream.idle? || stream.closed?
-
-          stream.window_size ||= old_initial_window_size
-          new_window = stream.window_size + delta
-
-          # Only overflow (> 2^31-1) is an error
-          # Negative windows are valid - sender just can't send until WINDOW_UPDATE
-          if new_window > 0x7FFF_FFFF
-            raise Errors::FlowControlError.new("Window size overflow", 0)
-          end
-
-          stream.window_size = new_window
-
-          # Flush pending data if window opened up
-          if stream.pending_body && stream.window_size > 0
-            @pending_body_size -= stream.pending_body.bytesize
-            pending = stream.pending_body
-            stream.pending_body = nil
-            send_data_with_flow_control stream, pending
-          end
-        end
-      end
-
-      send_settings_ack io
+      @write_queue << [:settings, parsed]
+      @write_queue << [:settings_ack]
     end
 
     def handle_goaway io, len, flags, stream_ident
@@ -826,10 +876,8 @@ module HTWO
         end
       end
 
-      if stream_ident.zero?
-        @window_size += increment
-        raise Errors::FlowControlError.new("Connection window overflow", 0) if @window_size > 0x7FFF_FFFF
-      else
+      # Validate stream exists and is not idle (for stream-level updates)
+      unless stream_ident.zero?
         stream = @streams[stream_ident]
         if !stream
           if stream_ident <= @highest_stream_id
@@ -840,23 +888,9 @@ module HTWO
         elsif stream.idle?
           raise Errors::ProtocolError.new("WINDOW_UPDATE on idle stream", 0)
         end
-
-        stream.window_size ||= 65535
-        stream.window_size += increment
-
-        # Check for overflow
-        if stream.window_size > 0x7FFF_FFFF
-          raise Errors::StreamError.new("Stream window overflow", stream_ident, 0, 0x3)
-        end
-
-        # Flush pending data if window opened up
-        if stream.pending_body && stream.window_size > 0
-          @pending_body_size -= stream.pending_body.bytesize
-          pending = stream.pending_body
-          stream.pending_body = nil
-          send_data_with_flow_control stream, pending
-        end
       end
+
+      @write_queue << [:window_update, stream_ident, increment]
     end
 
     def handle_rst_stream io, len, flags, stream_id
@@ -879,14 +913,11 @@ module HTWO
       end
 
       # Close the stream and mark that RST_STREAM was received
-      if stream.pending_body
-        @pending_body_size -= stream.pending_body.bytesize
-        stream.pending_body = nil
-      end
       stream.rst_received = true
       stream.close!
       @streams.delete(stream_id)
       @open_stream_count -= 1
+      @write_queue << [:close_stream, stream]
     end
 
     def handle_priority io, len, flags, stream_id
