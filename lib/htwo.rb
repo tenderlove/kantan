@@ -369,6 +369,8 @@ module HTWO
           send_goaway io, e.error_code
           io.close
           break
+        rescue IOError, Errno::ECONNRESET
+          break
         end
       end
 
