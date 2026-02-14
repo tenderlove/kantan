@@ -903,6 +903,14 @@ module HTWO
       # Append to header buffer
       @header_buffer << payload
 
+      if @header_buffer.bytesize > MAX_HEADER_LIST_SIZE
+        @expecting_continuation = false
+        @header_buffer = nil
+        @continuation_stream_id = nil
+        @continuation_flags = nil
+        raise Errors::ConnectionError.new("Header block too large", 0, 0x0B) # ENHANCE_YOUR_CALM
+      end
+
       # Check if END_HEADERS flag is set (bit 2)
       end_headers = flags[2].positive?
 
