@@ -94,6 +94,75 @@ class TestHTTP2 < Minitest::Test
     server_thread&.join(2)
   end
 
+  def test_flow_control_stall_rst_streams
+    client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
+    client_io.sync = true
+    server_io.sync = true
+
+    server_handler = TestServerHandler.new
+    body = "A" * 65535 # max default window worth of body per stream
+    server_handler.on_request_block = ->(stream) {
+      stream.respond [[":status", "200"]], body: body
+    }
+
+    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_thread = Thread.new { server_session.receive }
+
+    # Handshake
+    client_io.write "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    # Send SETTINGS with INITIAL_WINDOW_SIZE=0
+    client_io.write [
+      (6 << 8) | 0x04, # length=6, type=SETTINGS
+      0,                # flags
+      0                 # stream 0
+    ].pack("NCN")
+    client_io.write [0x04, 0].pack("nN") # SETTINGS_INITIAL_WINDOW_SIZE = 0
+
+    # ACK server's settings
+    write_frame client_io, 0x04, 0, "", flags: 0x01
+    client_io.flush
+
+    # Read server's SETTINGS and ACK it
+    encoder = HTWO::HPACK.new
+
+    # Send requests until we get a RST_STREAM back
+    rst_stream_error = nil
+    stream_id = 1
+
+    # Send enough requests to exceed 1MB pending body cap
+    # Each request will try to buffer body bytes (~65535 per stream at window=0)
+    # 1MB / 65535 ≈ 16 streams needed
+    20.times do
+      headers = encoder.encode([
+        [":method", "GET"],
+        [":path", "/"],
+        [":scheme", "https"],
+        [":authority", "localhost"],
+      ])
+      write_frame client_io, 0x01, stream_id, headers, flags: 0x05 # END_STREAM | END_HEADERS
+      stream_id += 2
+    end
+    client_io.flush
+
+    # Read frames until we get RST_STREAM
+    deadline = Time.now + 5
+    while Time.now < deadline
+      type, _, _, payload = read_frame(client_io)
+      break unless type
+      if type == 0x03 # RST_STREAM
+        rst_stream_error = payload.unpack1("N")
+        break
+      end
+    end
+
+    assert_equal 0x07, rst_stream_error, "Expected REFUSED_STREAM error code"
+
+  ensure
+    client_io&.close rescue nil
+    server_io&.close rescue nil
+    server_thread&.join(2)
+  end
+
   def test_simple_get
     client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
     client_io.sync = true

@@ -142,6 +142,7 @@ module HTWO
     private_constant :HEADER_BUFF
 
     MAX_HEADER_LIST_SIZE = 65536
+    MAX_PENDING_BODY_SIZE = 1_048_576
 
     CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b.freeze
 
@@ -172,6 +173,7 @@ module HTWO
       @streams = {}
       @highest_stream_id = 0 # Track highest stream ID seen from peer
       @open_stream_count = 0 # Track concurrent open streams
+      @pending_body_size = 0
       @local_max_concurrent_streams = 100
 
       # CONTINUATION frame state
@@ -422,7 +424,16 @@ module HTWO
 
         # If window is exhausted, buffer remaining data
         if send_size <= 0
-          stream.pending_body = body.byteslice(offset, remaining)
+          pending = body.byteslice(offset, remaining)
+          if @pending_body_size + pending.bytesize > MAX_PENDING_BODY_SIZE
+            send_rst_stream io, stream.id, 0x7 # REFUSED_STREAM
+            stream.close!
+            @streams.delete(stream.id)
+            @open_stream_count -= 1
+            return
+          end
+          @pending_body_size += pending.bytesize
+          stream.pending_body = pending
           return
         end
 
@@ -779,8 +790,10 @@ module HTWO
 
           # Flush pending data if window opened up
           if stream.pending_body && stream.window_size > 0
-            send_data_with_flow_control stream, stream.pending_body
+            @pending_body_size -= stream.pending_body.bytesize
+            pending = stream.pending_body
             stream.pending_body = nil
+            send_data_with_flow_control stream, pending
           end
         end
       end
@@ -840,8 +853,10 @@ module HTWO
 
         # Flush pending data if window opened up
         if stream.pending_body && stream.window_size > 0
-          send_data_with_flow_control stream, stream.pending_body
+          @pending_body_size -= stream.pending_body.bytesize
+          pending = stream.pending_body
           stream.pending_body = nil
+          send_data_with_flow_control stream, pending
         end
       end
     end
@@ -866,6 +881,10 @@ module HTWO
       end
 
       # Close the stream and mark that RST_STREAM was received
+      if stream.pending_body
+        @pending_body_size -= stream.pending_body.bytesize
+        stream.pending_body = nil
+      end
       stream.rst_received = true
       stream.close!
       @streams.delete(stream_id)
