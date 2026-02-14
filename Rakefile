@@ -7,8 +7,9 @@ Rake::TestTask.new do |t|
 end
 
 file "h2spec/h2spec" do |t|
-  cd "h2spec"
-  sh "make"
+  cd "h2spec" do
+    sh "make"
+  end
 end
 
 task :h2spec => "h2spec/h2spec" do
