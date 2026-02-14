@@ -196,39 +196,56 @@ module HTWO
 
     def validate_headers headers, stream_id, is_trailer
       # Track pseudo-headers and regular headers
-      pseudo_headers = {}
       seen_regular_header = false
       content_length = nil
 
-      # Connection-specific headers that are not allowed
-      forbidden_headers = %w[connection keep-alive proxy-connection transfer-encoding upgrade]
+      pseudo_headers = 0
 
       headers.each do |name, value|
-        raise Errors::StreamError.new("Uppercase header name", stream_id) if name =~ /[A-Z]/
+        raise Errors::StreamError.new("Uppercase header name", stream_id) if name.match?(/[A-Z]/)
 
-        if name.start_with?(":")
+        if name.getbyte(0) == 58 # starts with :
           raise Errors::StreamError.new("Pseudo-header in trailers", stream_id) if is_trailer
           raise Errors::StreamError.new("Pseudo-header after regular header", stream_id) if seen_regular_header
-          raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers.key?(name)
-          pseudo_headers[name] = value
 
-          unless %w[:method :scheme :path :authority :status].include?(name)
+          case name
+          when ":method"
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[0].positive?
+            pseudo_headers |= 0x01
+          when ":scheme"
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[1].positive?
+            pseudo_headers |= 0x02
+          when ":path"
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[2].positive?
+            raise Errors::StreamError.new("Empty :path", stream_id) if value.empty?
+            pseudo_headers |= 0x04
+          when ":authority"
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[3].positive?
+            pseudo_headers |= 0x08
+          when ":status"
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[4].positive?
+            raise Errors::StreamError.new("Response pseudo-header in request", stream_id) if @server_mode
+            pseudo_headers |= 0x10
+          else
             raise Errors::StreamError.new("Unknown pseudo-header", stream_id)
           end
-
-          raise Errors::StreamError.new("Response pseudo-header in request", stream_id) if @server_mode && name == ":status"
-          raise Errors::StreamError.new("Empty :path", stream_id) if name == ":path" && value.empty?
         else
           seen_regular_header = true
-          raise Errors::StreamError.new("Forbidden connection header", stream_id) if forbidden_headers.include?(name)
-          raise Errors::StreamError.new("Invalid TE value", stream_id) if name == "te" && value != "trailers"
-          content_length = value.to_i if name == "content-length"
+          case name
+            # Connection-specific headers that are not allowed
+          when "connection", "keep-alive", "proxy-connection", "transfer-encoding upgrade"
+            raise Errors::StreamError.new("Forbidden connection header", stream_id)
+          when "te"
+            raise Errors::StreamError.new("Invalid TE value", stream_id) if value != "trailers"
+          when "content-length"
+            content_length = value.to_i
+          end
         end
       end
 
       # Check required pseudo-headers for requests (server mode)
       if @server_mode && !is_trailer
-        unless pseudo_headers.key?(":method") && pseudo_headers.key?(":scheme") && pseudo_headers.key?(":path")
+        unless pseudo_headers & 0x7 == 0x7
           raise Errors::StreamError.new("Missing required pseudo-header", stream_id)
         end
       end
@@ -668,15 +685,15 @@ module HTWO
       end_headers = flags[2].positive?
 
       if end_headers
-        # Complete header block in this frame
-        headers = @decoding_table.decode payload, payload_start, payload_len, max_list_size: MAX_HEADER_LIST_SIZE
-
         # Update highest stream ID seen
         if stream_id > @highest_stream_id
           @highest_stream_id = stream_id
         end
 
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings.initial_window_size, false, nil, false)
+
+        # Complete header block in this frame
+        headers = @decoding_table.decode payload, payload_start, payload_len, max_list_size: MAX_HEADER_LIST_SIZE
 
         # Validate headers
         stream.content_length = validate_headers headers, stream_id, !!stream.headers
@@ -905,9 +922,9 @@ module HTWO
         @continuation_stream_id = nil
         @continuation_flags = nil
 
-        headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize, max_list_size: MAX_HEADER_LIST_SIZE
-
         stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings.initial_window_size, false, nil, false)
+
+        headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize, max_list_size: MAX_HEADER_LIST_SIZE
 
         # Validate headers
         stream.content_length = validate_headers headers, stream_id, !!stream.headers
