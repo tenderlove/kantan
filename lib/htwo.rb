@@ -481,12 +481,7 @@ module HTWO
     # ── Frame writers (called only from write thread) ─────────────────────
 
     def send_goaway_frame error
-      len = 8
-      len_type = (len << 8) | 0x7
-      flags = 0
-      ident = 0
-      last_stream_id = @highest_stream_id
-      io.write [len_type, flags, ident, last_stream_id, error].pack("NCNNN")
+      io.write [(8 << 8) | 0x7, 0, 0, @highest_stream_id, error].pack("NCNNN")
     end
 
     def send_rst_stream_frame stream_id, error_code
