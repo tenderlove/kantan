@@ -149,6 +149,10 @@ module HTWO
     def finish
       @write_queue << [:goaway, 0x0]
       @write_queue << [:shutdown]
+      join
+    end
+
+    def join
       @writer&.join
       @reader&.join
     end
@@ -216,8 +220,8 @@ module HTWO
           raise Errors::StreamError.new("Empty :path", stream_id) if name == ":path" && value.empty?
         else
           seen_regular_header = true
-          raise Errors::StreamError.new("Forbidden connection header", stream_id) if forbidden_headers.include?(name.downcase)
-          raise Errors::StreamError.new("Invalid TE value", stream_id) if name.downcase == "te" && value != "trailers"
+          raise Errors::StreamError.new("Forbidden connection header", stream_id) if forbidden_headers.include?(name)
+          raise Errors::StreamError.new("Invalid TE value", stream_id) if name == "te" && value != "trailers"
           content_length = value.to_i if name == "content-length"
         end
       end
