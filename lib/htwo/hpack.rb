@@ -181,7 +181,7 @@ module HTWO
       while pos < final
         byte = buffer.getbyte(pos)
         pos += 1
-        if byte[7].positive?
+        if byte > 0x7F # Bit 8 is set
           seen_header = true
           idx = byte & 0x7F
           if idx == 127
@@ -194,7 +194,7 @@ module HTWO
             raise Errors::CompressionError, "header list too large" if list_size > max_list_size
           end
           headers << entry
-        elsif byte[6].positive?
+        elsif byte > 0x3F # Bit 7 is set
           seen_header = true
           name_idx = byte & 0x3F
           if name_idx == 63
@@ -204,7 +204,7 @@ module HTWO
 
           if name_idx.zero?
             len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
-            huffman = len[7].positive?
+            huffman = len > 0x7F # Bit 8 is set
             len &= 0x7F
             pos += 1
             if len == 127
@@ -222,7 +222,7 @@ module HTWO
           end
 
           len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
-          huffman = len[7].positive?
+          huffman = len > 0x7F # Bit 8 is set
           len &= 0x7F
           pos += 1
           if len == 127
@@ -242,7 +242,7 @@ module HTWO
           end
           headers << [name, value]
           @dynamic_table.add(name, value)
-        elsif byte[5].positive?  # Dynamic table size update
+        elsif byte > 0x1F # Bit 5 is set: Dynamic table size update
           raise Errors::CompressionError, "table size update after headers" if seen_header
           new_size = byte & 0x1F
           if new_size == 31
@@ -338,9 +338,8 @@ module HTWO
     end
 
     def lookup idx
-      raise Errors::CompressionError, "index 0 is invalid" if idx.zero?
-
       if idx < 62 # STATIC_TABLE.length + 1
+        raise Errors::CompressionError, "index 0 is invalid" if idx.zero?
         STATIC_TABLE[idx - 1]
       else
         @dynamic_table.lookup(idx)
