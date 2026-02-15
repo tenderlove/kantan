@@ -82,8 +82,6 @@ module HTWO
 
     CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b.freeze
 
-    attr_reader :io
-
     def initialize io, handler:
       @io = io
       @handler = handler
@@ -160,21 +158,21 @@ module HTWO
 
     def connect
       @server_mode = false
-      io.write CONNECTION_PREFACE
-      io.write Frames::Settings::DEFAULT_ENCODED
+      @io.write CONNECTION_PREFACE
+      @io.write Frames::Settings::DEFAULT_ENCODED
       start_write_thread
       start_read_thread
     end
 
     def receive
       @server_mode = true
-      preface = io.read CONNECTION_PREFACE.bytesize
+      preface = @io.read CONNECTION_PREFACE.bytesize
       if preface != CONNECTION_PREFACE
-        send_goaway_frame 0x1 # PROTOCOL_ERROR
-        io.close
+        send_goaway_frame @io, 0x1 # PROTOCOL_ERROR
+        @io.close
         return
       end
-      io.write Frames::Settings::DEFAULT_ENCODED
+      @io.write Frames::Settings::DEFAULT_ENCODED
       start_write_thread
       start_read_thread
     end
@@ -211,7 +209,7 @@ module HTWO
 
           case name
           when ":method"
-            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[0].positive?
+            raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers.odd?
             pseudo_headers |= 0x01
           when ":scheme"
             raise Errors::StreamError.new("Duplicate pseudo-header", stream_id) if pseudo_headers[1].positive?
@@ -257,10 +255,10 @@ module HTWO
     # ── Write thread ──────────────────────────────────────────────────────
 
     def start_write_thread
-      @writer = Thread.new { write_loop }
+      @writer = Thread.new { write_loop(@io) }
     end
 
-    def write_loop
+    def write_loop io
       wbuf = String.new(encoding: Encoding::BINARY, capacity: WRITE_BUFFER_SIZE)
 
       while (cmd = @write_queue.pop)
@@ -453,10 +451,10 @@ module HTWO
     # ── Read thread ───────────────────────────────────────────────────────
 
     def start_read_thread
-      @reader = Thread.new { read_loop }
+      @reader = Thread.new { read_loop(@io) }
     end
 
-    def read_loop
+    def read_loop io
       header_buff = HEADER_BUFF.dup
 
       while true
@@ -517,7 +515,7 @@ module HTWO
 
     # ── Frame writers (called only from write thread) ─────────────────────
 
-    def send_goaway_frame error
+    def send_goaway_frame io, error
       io.write [(8 << 8) | 0x7, 0, 0, @highest_stream_id, error].pack("NCNNN")
     end
 
@@ -583,7 +581,7 @@ module HTWO
       end
 
       # If END_STREAM flag is set, half-close remote
-      unless flags[0].zero?
+      if flags.odd? # Bottom bit is set
         # Validate content-length if specified
         if stream.content_length && stream.data
           if stream.data.bytesize != stream.content_length
@@ -608,32 +606,31 @@ module HTWO
       raise Errors::ProtocolError.new("Got HEADERS on stream 0", len) if stream_id.zero?
 
       # Validate stream ID parity for new streams (peer-initiated)
-      if !@streams.key?(stream_id)
+      unless @streams.key?(stream_id)
         if @server_mode && stream_id.even?
           raise Errors::ProtocolError.new("Even stream ID from client", len)
         elsif !@server_mode && stream_id.odd?
           raise Errors::ProtocolError.new("Odd stream ID from server", len)
         end
-      end
 
-      # Validate stream ID is increasing (unless stream already exists)
-      if !@streams.key?(stream_id) && stream_id <= @highest_stream_id
-        raise Errors::ProtocolError.new("Stream ID not increasing", len)
-      end
+        # Validate stream ID is increasing (unless stream already exists)
+        if stream_id <= @highest_stream_id
+          raise Errors::ProtocolError.new("Stream ID not increasing", len)
+        end
 
-      # Check MAX_CONCURRENT_STREAMS limit for new streams
-      if !@streams.key?(stream_id) && @open_stream_count >= @local_max_concurrent_streams
-        raise Errors::RefusedStream.new("Max concurrent streams exceeded", stream_id, len)
+        # Check MAX_CONCURRENT_STREAMS limit for new streams
+        if @open_stream_count >= @local_max_concurrent_streams
+          raise Errors::RefusedStream.new("Max concurrent streams exceeded", stream_id, len)
+        end
       end
 
       # Check stream state
-      @streams[stream_id]&.receiving_headers!(flags[0].positive?, len)
+      @streams[stream_id]&.receiving_headers!(flags.odd?, len)
 
       # Check for PRIORITY flag (bit 5) - HEADERS can include priority data
       has_priority = flags[5].positive?
       priority_bytes = has_priority ? 5 : 0
 
-      payload = "".b
       payload_start = 0
       payload_len = 0
 
@@ -643,6 +640,8 @@ module HTWO
         if len > 0
           payload = io.read(len)
           payload_len = len
+        else
+          payload = "".b
         end
 
         # If PRIORITY flag set, validate and extract priority data
@@ -675,6 +674,8 @@ module HTWO
         if data_len > 0
           payload = io.read(data_len)
           payload_len = data_len
+        else
+          payload = "".b
         end
 
         # If PRIORITY flag set, validate and extract priority data
@@ -695,9 +696,7 @@ module HTWO
       end
 
       # Check if END_HEADERS flag is set (bit 2)
-      end_headers = flags[2].positive?
-
-      if end_headers
+      if flags[2].positive?
         # Update highest stream ID seen
         if stream_id > @highest_stream_id
           @highest_stream_id = stream_id
@@ -722,7 +721,7 @@ module HTWO
         @handler.on_headers stream
 
         # If END_STREAM flag is set, half-close remote
-        if flags[0].positive?
+        if flags.odd?
           # Validate content-length before closing
           if stream.content_length && stream.data
             if stream.data.bytesize != stream.content_length
@@ -760,7 +759,7 @@ module HTWO
       raise Errors::FrameSizeError.new("PING length != 8", len) unless len == 8
 
       payload = io.read(8)
-      if flags[0].zero?
+      if flags.even?
         # Peer PING: queue ACK for write thread
         @write_queue << [:ping_ack, payload]
       else
@@ -775,7 +774,7 @@ module HTWO
       raise Errors::ProtocolError.new("SETTINGS on non-zero stream", len) unless stream_ident.zero?
 
       # SETTINGS with ACK flag must have zero length (bit 0)
-      if flags[0].positive?
+      if flags.odd?
         raise Errors::FrameSizeError.new("SETTINGS ACK with payload", len) if len.positive?
         return
       end
@@ -924,9 +923,7 @@ module HTWO
       end
 
       # Check if END_HEADERS flag is set (bit 2)
-      end_headers = flags[2].positive?
-
-      if end_headers
+      if flags[2].positive?
         # Complete header block
         @expecting_continuation = false
         complete_payload = @header_buffer
@@ -952,7 +949,7 @@ module HTWO
         @handler.on_headers stream
 
         # If END_STREAM flag was set on original HEADERS frame, half-close remote
-        if saved_flags[0].positive?
+        if saved_flags.odd?
           stream.half_close_remote!
           @handler.on_request stream
           if stream.closed?
