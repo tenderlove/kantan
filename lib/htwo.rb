@@ -78,6 +78,7 @@ module HTWO
 
     MAX_HEADER_LIST_SIZE = 65536
     MAX_PENDING_BODY_SIZE = 1_048_576
+    WRITE_BUFFER_SIZE = 65536
 
     CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b.freeze
 
@@ -260,6 +261,8 @@ module HTWO
     end
 
     def write_loop
+      wbuf = String.new(encoding: Encoding::BINARY, capacity: WRITE_BUFFER_SIZE)
+
       while (cmd = @write_queue.pop)
         case cmd[0]
         when :headers
@@ -273,9 +276,8 @@ module HTWO
           flags = 0x04 # END_HEADERS
           flags |= 0x01 if end_stream
 
-          io.write [len_type, flags, stream_id].pack("NCN")
-          io.write hpack
-
+          [len_type, flags, stream_id].pack("NCN", buffer: wbuf)
+          wbuf << hpack
 
           if stream.idle?
             stream.open!
@@ -301,35 +303,36 @@ module HTWO
             stream.pending_body = body.dup
           end
           @pending_body_size += body.bytesize
-          flush_pending
+          flush_pending wbuf
 
         when :ping
           _, payload = cmd
-          io.write "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
-          io.write payload
+          wbuf << "\x00\x00\x08\x06\x00\x00\x00\x00\x00"
+          wbuf << payload
 
         when :ping_ack
           _, payload = cmd
-          io.write "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
-          io.write payload
+          wbuf << "\x00\x00\x08\x06\x01\x00\x00\x00\x00"
+          wbuf << payload
 
         when :settings_ack
-          io.write "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+          wbuf << "\x00\x00\x00\x04\x01\x00\x00\x00\x00"
 
         when :rst_stream
           _, stream_id, error_code = cmd
-          send_rst_stream_frame stream_id, error_code
+          [(4 << 8) | 0x3, 0, stream_id, error_code].pack("NCNN", buffer: wbuf)
 
         when :goaway
           _, error_code = cmd
-          send_goaway_frame error_code
+          [(8 << 8) | 0x7, 0, 0, @highest_stream_id, error_code].pack("NCNNN", buffer: wbuf)
 
         when :window_update
           _, stream_id, increment = cmd
+          stream_overflow = false
           if stream_id.zero?
             @connection_window += increment
             if @connection_window > 0x7FFF_FFFF
-              send_goaway_frame 0x3 # FLOW_CONTROL_ERROR
+              [(8 << 8) | 0x7, 0, 0, @highest_stream_id, 0x3].pack("NCNNN", buffer: wbuf)
               break
             end
           else
@@ -337,12 +340,12 @@ module HTWO
             if stream
               stream.window_size += increment
               if stream.window_size > 0x7FFF_FFFF
-                send_rst_stream_frame stream_id, 0x3 # FLOW_CONTROL_ERROR
-                next
+                [(4 << 8) | 0x3, 0, stream_id, 0x3].pack("NCNN", buffer: wbuf)
+                stream_overflow = true
               end
             end
           end
-          flush_pending
+          flush_pending wbuf unless stream_overflow
 
         when :settings
           _, settings = cmd
@@ -355,25 +358,25 @@ module HTWO
           if new_initial_window_size != old_initial_window_size
             delta = new_initial_window_size - old_initial_window_size
             overflow = false
-            @streams.values.each do |stream|
+            @streams.each_value do |stream|
               next if stream.idle? || stream.closed?
               stream.window_size += delta
               if stream.window_size > 0x7FFF_FFFF
-                send_goaway_frame 0x3 # FLOW_CONTROL_ERROR
+                [(8 << 8) | 0x7, 0, 0, @highest_stream_id, 0x3].pack("NCNNN", buffer: wbuf)
                 overflow = true
                 break
               end
             end
             break if overflow
           end
-          flush_pending
+          flush_pending wbuf
 
         when :send_window_update
           _, stream_id, increment = cmd
           # Connection-level WINDOW_UPDATE (stream 0)
-          io.write [(4 << 8) | 0x8, 0, 0, increment].pack("NCNN")
+          [(4 << 8) | 0x8, 0, 0, increment].pack("NCNN", buffer: wbuf)
           # Stream-level WINDOW_UPDATE
-          io.write [(4 << 8) | 0x8, 0, stream_id, increment].pack("NCNN")
+          [(4 << 8) | 0x8, 0, stream_id, increment].pack("NCNN", buffer: wbuf)
 
         when :close_stream
           _, stream = cmd
@@ -385,15 +388,22 @@ module HTWO
         when :shutdown
           break
         end
+
+        # Flush when queue is drained (about to block) or buffer is large
+        if wbuf.bytesize > 0 && (@write_queue.empty? || wbuf.bytesize >= WRITE_BUFFER_SIZE)
+          io.write wbuf
+          wbuf.clear
+        end
       end
     rescue IOError, Errno::ECONNRESET
       # Connection closed, exit write loop
     ensure
+      io.write wbuf rescue nil if wbuf.bytesize > 0
       io.close rescue nil
     end
 
-    def flush_pending
-      @streams.values.each do |stream|
+    def flush_pending wbuf
+      @streams.each_value do |stream|
         next unless stream.pending_body
 
         while stream.pending_body && !stream.pending_body.empty?
@@ -402,7 +412,7 @@ module HTWO
 
           if send_size <= 0
             if @pending_body_size > MAX_PENDING_BODY_SIZE
-              send_rst_stream_frame stream.id, 0x7 # REFUSED_STREAM
+              [(4 << 8) | 0x3, 0, stream.id, 0x7].pack("NCNN", buffer: wbuf)
               @pending_body_size -= stream.pending_body.bytesize
               stream.pending_body = nil
               stream.close!
@@ -419,9 +429,8 @@ module HTWO
           flags = is_last ? 0x01 : 0x00
           len_type = (chunk.bytesize << 8) | 0x0
 
-          io.write [len_type, flags, stream.id].pack("NCN")
-          io.write chunk
-
+          [len_type, flags, stream.id].pack("NCN", buffer: wbuf)
+          wbuf << chunk
 
           stream.window_size -= send_size
           @connection_window -= send_size
@@ -510,13 +519,6 @@ module HTWO
 
     def send_goaway_frame error
       io.write [(8 << 8) | 0x7, 0, 0, @highest_stream_id, error].pack("NCNNN")
-    end
-
-    def send_rst_stream_frame stream_id, error_code
-      len = 4
-      len_type = (len << 8) | 0x3 # RST_STREAM
-      flags = 0
-      io.write [len_type, flags, stream_id, error_code].pack("NCNN")
     end
 
     # ── Frame handlers (called only from read thread) ─────────────────────
