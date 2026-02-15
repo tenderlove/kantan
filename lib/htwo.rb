@@ -368,6 +368,13 @@ module HTWO
           end
           flush_pending
 
+        when :send_window_update
+          _, stream_id, increment = cmd
+          # Connection-level WINDOW_UPDATE (stream 0)
+          io.write [(4 << 8) | 0x8, 0, 0, increment].pack("NCNN")
+          # Stream-level WINDOW_UPDATE
+          io.write [(4 << 8) | 0x8, 0, stream_id, increment].pack("NCNN")
+
         when :close_stream
           _, stream = cmd
           if stream.pending_body
@@ -541,6 +548,10 @@ module HTWO
 
         # Read and discard padding
         io.read(pad_length) if pad_length > 0
+      end
+
+      if len > 0
+        @write_queue << [:send_window_update, stream_id, len]
       end
 
       stream = @streams[stream_id]
