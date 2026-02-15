@@ -261,7 +261,7 @@ module HTWO
 
           if name_idx == 0
             len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
-            huffman = len[7].positive?
+            huffman = len > 0x7F
             len &= 0x7F
             pos += 1
             if len == 127
@@ -279,7 +279,7 @@ module HTWO
           end
 
           len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
-          huffman = len[7].positive?
+          huffman = len > 0x7F
           len &= 0x7F
           pos += 1
           if len == 127

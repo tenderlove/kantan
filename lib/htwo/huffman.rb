@@ -134,6 +134,60 @@ module HTWO
 
     DECODE_TABLE = Ractor.make_shareable(build_decode_table)
 
+    # Build byte-level decode table for fast Huffman decoding.
+    # Instead of processing 1 bit at a time (8 iterations per byte),
+    # this table processes 8 bits at once (1 lookup per byte).
+    #
+    # Returns [byte_syms, byte_meta]:
+    #   byte_syms: Array of frozen strings (symbols emitted for each state+byte)
+    #   byte_meta: Array of packed integers: next_state_x256 | (padding << 16) | (eos ? 1<<20 : 0)
+    #   Index into both arrays: state + byte (state is pre-multiplied by 256)
+    def self.build_byte_decode_table
+      # Count internal nodes to determine number of states
+      num_states = DECODE_TABLE.size / 2
+      byte_syms = Array.new(num_states * 256)
+      byte_meta = Array.new(num_states * 256)
+      string_cache = {}
+
+      num_states.times do |state_idx|
+        256.times do |byte|
+          pos = state_idx * 2
+          syms = ""
+          eos = false
+          padding_bits = 0
+
+          8.times do |i|
+            bit = (byte >> (7 - i)) & 1
+            pos = DECODE_TABLE[pos + bit]
+
+            if pos < 0
+              sym = -pos - 1
+              if sym == 256
+                eos = true
+              else
+                syms << sym
+              end
+              pos = 0
+              padding_bits = 0
+            else
+              padding_bits += 1
+            end
+          end
+
+          next_state_x256 = (pos / 2) * 256
+          idx = state_idx * 256 + byte
+
+          syms = (string_cache[syms] ||= syms.freeze)
+          byte_syms[idx] = syms
+          byte_meta[idx] = next_state_x256 | (padding_bits << 16) | (eos ? 1 << 20 : 0)
+        end
+      end
+
+      [byte_syms, byte_meta]
+    end
+
+    BYTE_SYMS, BYTE_META = Ractor.make_shareable(build_byte_decode_table)
+
     # Build encoding lookup table: byte value -> [code, length]
     ENCODE_TABLE = Ractor.make_shareable(CODES[0, 256].map { |_sym, code, length| [code, length] })
 
@@ -163,37 +217,25 @@ module HTWO
     end
 
     def self.decode data, offset, length
+      return "" if length == 0
+
       result = ""
-      pos = 0
+      state = 0
       finish = offset + length
-      padding_bits = 0
+      meta = 0
 
       while offset < finish
-        byte = data.getbyte(offset)
+        idx = state + data.getbyte(offset)
         offset += 1
-        i = 0
-        while i < 8
-          bit = (byte >> (7 - i)) & 1
-          pos = DECODE_TABLE[pos + bit]
-
-          if pos < 0
-            sym = -pos - 1
-            # EOS symbol must not appear in encoded data
-            raise Errors::CompressionError, "EOS in Huffman data" if sym == 256
-            result << sym
-            pos = 0
-            padding_bits = 0
-          else
-            padding_bits += 1
-          end
-          i += 1
-        end
+        result << BYTE_SYMS[idx]
+        meta = BYTE_META[idx]
+        state = meta & 0xFFFF
+        raise Errors::CompressionError, "EOS in Huffman data" if meta & 0x100000 != 0
       end
 
-      # Padding must be at most 7 bits
+      padding_bits = (meta >> 16) & 0xF
       raise Errors::CompressionError, "Huffman padding > 7 bits" if padding_bits > 7
 
-      # Padding must be the most significant bits of EOS (all 1s)
       if padding_bits > 0
         last_byte = data.getbyte(finish - 1)
         mask = (1 << padding_bits) - 1
