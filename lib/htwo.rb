@@ -533,6 +533,25 @@ module HTWO
         raise Errors::ProtocolError.new("Got DATA on stream 0", len)
       end
 
+      begin
+        stream = @streams.fetch(stream_id)
+      rescue KeyError
+        if stream_id <= @highest_stream_id
+          raise Errors::StreamClosedError.new("DATA on closed stream", len)
+        else
+          raise Errors::ProtocolError.new("Invalid stream", len)
+        end
+      end
+
+      raise Errors::ProtocolError.new("Invalid stream", len) if stream.idle?
+
+      # Check stream state - DATA not allowed on closed or half_closed_remote
+      if stream.closed?
+        raise Errors::StreamClosedError.new("DATA on closed stream", len)
+      elsif stream.half_closed_remote?
+        raise Errors::StreamClosed.new("DATA on half-closed-remote stream", stream_id, len)
+      end
+
       # Check for PADDED flag (bit 3)
       if flags[3].zero?
         # No padding, read all data
@@ -558,26 +577,6 @@ module HTWO
 
       if len > 0
         @write_queue << [:send_window_update, stream_id, len]
-      end
-
-      stream = @streams[stream_id]
-
-      # If stream doesn't exist or is in idle state, send error
-      if !stream
-        if stream_id <= @highest_stream_id
-          raise Errors::StreamClosedError.new("DATA on closed stream", 0)
-        else
-          raise Errors::ProtocolError.new("Invalid stream", 0)
-        end
-      elsif stream.idle?
-        raise Errors::ProtocolError.new("Invalid stream", 0)
-      end
-
-      # Check stream state - DATA not allowed on closed or half_closed_remote
-      if stream.closed?
-        raise Errors::StreamClosedError.new("DATA on closed stream", 0)
-      elsif stream.half_closed_remote?
-        raise Errors::StreamClosed.new("DATA on half-closed-remote stream", stream_id)
       end
 
       if chunk && chunk.bytesize > 0

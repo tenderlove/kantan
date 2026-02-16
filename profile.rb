@@ -15,15 +15,17 @@ port = server.addr[1]
 logger = Logger.new $stderr
 logger.debug "port #{port}"
 
-while true
-  client = server.accept
-  client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+logger.debug "new connection"
+#Vernier.profile(out: "time_profile.json") do
+  4.times.map {
+    client = server.accept
+    client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
-  logger.debug "new connection"
-  Vernier.profile(out: "time_profile.json") do
-    session = HTWO::Session.new(client, handler: MyApp.new)
-    session.receive
-    session.join
-  end
-  logger.debug "done"
-end
+    Thread.new {
+      session = HTWO::Session.new(client, handler: MyApp.new)
+      session.receive
+      session.join
+    }
+  }.each(&:join)
+#end
+logger.debug "done"

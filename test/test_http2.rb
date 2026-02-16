@@ -163,6 +163,44 @@ class TestHTTP2 < Minitest::Test
     server_thread&.join(2)
   end
 
+  def test_data_on_unknown_stream
+    client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
+    client_io.sync = true
+    server_io.sync = true
+
+    server_handler = TestServerHandler.new
+    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_thread = Thread.new { server_session.receive }
+
+    # Handshake
+    client_io.write "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    write_frame client_io, 0x04, 0, "" # SETTINGS
+    write_frame client_io, 0x04, 0, "", flags: 0x01 # SETTINGS ACK
+
+    # Send DATA on stream 1 without ever sending HEADERS
+    write_frame client_io, 0x00, 1, "hello"
+    client_io.flush
+
+    # Expect GOAWAY with PROTOCOL_ERROR (0x1)
+    goaway_error = nil
+    deadline = Time.now + 5
+    while Time.now < deadline
+      type, _, _, payload = read_frame(client_io)
+      break unless type
+      if type == 0x07 # GOAWAY
+        _, goaway_error = payload.unpack("NN")
+        break
+      end
+    end
+
+    assert_equal 0x01, goaway_error, "Expected PROTOCOL_ERROR"
+
+  ensure
+    client_io&.close rescue nil
+    server_io&.close rescue nil
+    server_thread&.join(2)
+  end
+
   def test_simple_get
     client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
     client_io.sync = true
