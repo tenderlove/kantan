@@ -2,27 +2,28 @@ require "stringio"
 
 module HTWO
   class RackHandler < Handler
-    def initialize(app, server_name:, server_port:, scheme: "https")
+    def initialize app, executor:, server_name:, server_port:, scheme: "https"
       @app = app
+      @executor = executor
       @server_name = server_name
       @server_port = server_port.to_s
       @scheme = scheme
       @bodies = {}  # stream_id => StringIO
     end
 
-    def on_data(stream, chunk)
+    def on_data stream, chunk
       (@bodies[stream.id] ||= StringIO.new("".b)) << chunk
     end
 
-    def on_request(stream)
+    def on_request stream
       body = @bodies.delete(stream.id)
       body&.rewind
-      Thread.new { serve(stream, body) }
+      @executor.post(stream, body) { |s, b| serve(s, b) }
     end
 
     private
 
-    def serve(stream, body)
+    def serve stream, body
       env = build_env(stream, body)
       status, headers, rack_body = @app.call(env)
 

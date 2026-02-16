@@ -2,15 +2,26 @@
 
 require_relative "helper"
 require 'rack'
+require 'concurrent'
 require 'htwo/rack_handler'
 
 class TestRackHandler < Minitest::Test
+  def setup
+    @executor = Concurrent::FixedThreadPool.new(5)
+  end
+
+  def teardown
+    @executor.shutdown
+    @executor.wait_for_termination(2)
+  end
+
   def setup_pair(rack_app)
     client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
     client_io.sync = true
     server_io.sync = true
 
     handler = HTWO::RackHandler.new(rack_app,
+      executor: @executor,
       server_name: "localhost",
       server_port: 443,
       scheme: "https")
