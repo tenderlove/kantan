@@ -248,6 +248,38 @@ class TestRackHandler < Minitest::Test
     server_thread&.join(2)
   end
 
+  def test_send_file_via_to_path
+    require "tempfile"
+    tmpfile = Tempfile.new("htwo_test")
+    tmpfile.binmode
+    tmpfile.write("file body content")
+    tmpfile.flush
+
+    app = ->(env) {
+      [200, { "content-type" => "application/octet-stream" }, tmpfile]
+    }
+
+    client_session, client_handler, client_io, server_io, server_thread = setup_pair(app)
+
+    client_session.request([
+      [":method", "GET"],
+      [":path", "/download"],
+      [":scheme", "https"],
+      [":authority", "localhost"],
+    ])
+
+    headers, body = collect_response(client_handler)
+
+    assert_equal "200", headers.assoc(":status").last
+    assert_equal "file body content", body
+    assert tmpfile.closed?, "rack body should be closed"
+  ensure
+    tmpfile&.unlink
+    client_io&.close rescue nil
+    server_io&.close rescue nil
+    server_thread&.join(2)
+  end
+
   def test_rack_lint_compliance
     app = ->(env) {
       [200, { "content-type" => "text/plain" }, ["lint ok"]]

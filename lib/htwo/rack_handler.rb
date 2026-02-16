@@ -38,51 +38,48 @@ module HTWO
         end
       end
 
-      # Collect response body
-      response_body = nil
       if rack_body.respond_to?(:to_path)
-        path = rack_body.to_path
-        response_body = File.binread(path) if path
-      end
-
-      unless response_body
+        stream.send_headers(response_headers, has_body: true)
+        stream.send_file(rack_body.to_path)
+      else
         parts = []
         rack_body.each { |part| parts << part }
         response_body = parts.join unless parts.empty?
-      end
 
-      stream.respond(response_headers, body: response_body)
+        stream.send_headers(response_headers, has_body: !!response_body)
+        stream.send_body(response_body) if response_body
+      end
     ensure
       rack_body.close if rack_body.respond_to?(:close)
     end
 
-    def build_env(stream, body)
-      headers = stream.headers
-      method = header_value(headers, ":method")
-      path_and_query = header_value(headers, ":path")
-      authority = header_value(headers, ":authority")
-      scheme = header_value(headers, ":scheme") || @scheme
-
-      path, query = path_and_query.split("?", 2)
-
+    def build_env stream, body
       input = body || StringIO.new("".b)
+      authority = nil
+      method = nil
+      path = nil
+      query = nil
+      scheme = nil
 
       env = {
-        "REQUEST_METHOD"  => method,
         "SCRIPT_NAME"     => "",
-        "PATH_INFO"       => path,
-        "QUERY_STRING"    => query || "",
         "SERVER_NAME"     => @server_name,
         "SERVER_PORT"     => @server_port,
         "SERVER_PROTOCOL" => "HTTP/2",
-        "rack.url_scheme" => scheme,
         "rack.input"      => input,
         "rack.errors"     => $stderr,
       }
 
-      headers.each do |name, value|
-        next if name.start_with?(":")
+      stream.headers.each do |name, value|
         case name
+        when ":method"
+          method = value
+        when ":path"
+          path, query = value.split("?", 2)
+        when ":scheme"
+          scheme = value
+        when ":authority"
+          authority = value
         when "content-type"
           env["CONTENT_TYPE"] = value
         when "content-length"
@@ -97,14 +94,15 @@ module HTWO
         end
       end
 
+      env["REQUEST_METHOD"]  = method
+      env["PATH_INFO"]       = path
+      env["QUERY_STRING"]    = query || ""
+      env["rack.url_scheme"] = scheme || @scheme
+
       # Use :authority as HTTP_HOST if host header wasn't set
       env["HTTP_HOST"] ||= authority if authority
 
       env
-    end
-
-    def header_value(headers, name)
-      headers.assoc(name)&.last
     end
   end
 end
