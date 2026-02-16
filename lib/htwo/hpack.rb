@@ -211,11 +211,7 @@ module HTWO
               remainder, pos = buffer.unpack("R^", offset: pos)
               len = 127 + remainder
             end
-            name = if huffman
-              Huffman.decode(buffer, pos, len)
-            else
-              buffer.byteslice(pos, len)
-            end
+            name = decode_name(huffman, buffer, pos, len)
             pos += len
           else
             name = lookup(name_idx).first
@@ -229,11 +225,7 @@ module HTWO
             remainder, pos = buffer.unpack("R^", offset: pos)
             len = 127 + remainder
           end
-          value = if huffman
-            Huffman.decode(buffer, pos, len)
-          else
-            buffer.byteslice(pos, len)
-          end
+          value = decode_value huffman, buffer, pos, len
           pos += len
 
           if max_list_size
@@ -259,7 +251,7 @@ module HTWO
             name_idx = 15 + remainder
           end
 
-          if name_idx == 0
+          if name_idx.zero?
             len = buffer.getbyte(pos) || raise(Errors::CompressionError, "truncated header block")
             huffman = len > 0x7F
             len &= 0x7F
@@ -268,11 +260,7 @@ module HTWO
               remainder, pos = buffer.unpack("R^", offset: pos)
               len = 127 + remainder
             end
-            name = if huffman
-              Huffman.decode(buffer, pos, len)
-            else
-              buffer.byteslice(pos, len)
-            end
+            name = decode_name(huffman, buffer, pos, len)
             pos += len
           else
             name = lookup(name_idx).first
@@ -286,11 +274,7 @@ module HTWO
             remainder, pos = buffer.unpack("R^", offset: pos)
             len = 127 + remainder
           end
-          value = if huffman
-            Huffman.decode(buffer, pos, len)
-          else
-            buffer.byteslice(pos, len)
-          end
+          value = decode_value huffman, buffer, pos, len
           pos += len
 
           if max_list_size
@@ -343,6 +327,24 @@ module HTWO
         STATIC_TABLE[idx - 1]
       else
         @dynamic_table.lookup(idx)
+      end
+    end
+
+    def decode_name huffman, buffer, pos, len
+      if huffman
+        Huffman.decode_name(buffer, pos, len)
+      else
+        name = buffer.byteslice(pos, len)
+        raise Errors::CompressionError, "Uppercase in header name" if name.match?(/[A-Z]/)
+        name
+      end
+    end
+
+    def decode_value huffman, buffer, pos, len
+      if huffman
+        Huffman.decode(buffer, pos, len)
+      else
+        buffer.byteslice(pos, len)
       end
     end
 

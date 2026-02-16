@@ -98,6 +98,19 @@ module HTWO
       end
     end
 
+    def test_uppercase_huffman_header_name_rejected
+      decoder = HTWO::HPACK.new
+      upper_name = "Content-Type"
+      huffed = Huffman.encode(upper_name)
+      block = "\x40".b
+      block << (0x80 | huffed.bytesize)
+      block << huffed
+      block << "\x00"
+      assert_raises HTWO::Errors::CompressionError do
+        decoder.decode(block)
+      end
+    end
+
     def test_max_list_size_exceeded
       encoder = HTWO::HPACK.new
       decoder = HTWO::HPACK.new

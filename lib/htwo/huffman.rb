@@ -179,7 +179,8 @@ module HTWO
 
           syms = (string_cache[syms] ||= syms.freeze)
           byte_syms[idx] = syms
-          byte_meta[idx] = next_state_x256 | (padding_bits << 16) | (eos ? 1 << 20 : 0)
+          has_upper = syms.each_byte.any? { |b| b >= 65 && b <= 90 }
+          byte_meta[idx] = next_state_x256 | (padding_bits << 16) | (eos ? 1 << 20 : 0) | (has_upper ? 1 << 21 : 0)
         end
       end
 
@@ -216,8 +217,40 @@ module HTWO
       out
     end
 
+    def self.decode_name data, offset, length
+      return "".freeze if length == 0
+
+      result = ""
+      state = 0
+      finish = offset + length
+      meta = 0
+
+      while offset < finish
+        idx = state + data.getbyte(offset)
+        offset += 1
+        result << BYTE_SYMS[idx]
+        meta = BYTE_META[idx]
+        state = meta & 0xFFFF
+        if meta & 0x300000 != 0
+          raise Errors::CompressionError, "EOS in Huffman data" if meta & 0x100000 != 0
+          raise Errors::CompressionError, "Uppercase in header name"
+        end
+      end
+
+      padding_bits = (meta >> 16) & 0xF
+      raise Errors::CompressionError, "Huffman padding > 7 bits" if padding_bits > 7
+
+      if padding_bits > 0
+        last_byte = data.getbyte(finish - 1)
+        mask = (1 << padding_bits) - 1
+        raise Errors::CompressionError, "Huffman padding not EOS" if (last_byte & mask) != mask
+      end
+
+      result.freeze
+    end
+
     def self.decode data, offset, length
-      return "" if length == 0
+      return "".freeze if length == 0
 
       result = ""
       state = 0
@@ -242,7 +275,7 @@ module HTWO
         raise Errors::CompressionError, "Huffman padding not EOS" if (last_byte & mask) != mask
       end
 
-      result
+      result.freeze
     end
   end
 end

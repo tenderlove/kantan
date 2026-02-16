@@ -201,8 +201,6 @@ module HTWO
       pseudo_headers = 0
 
       headers.each do |name, value|
-        raise Errors::StreamError.new("Uppercase header name", stream_id) if name.match?(/[A-Z]/)
-
         if name.getbyte(0) == 58 # starts with :
           raise Errors::StreamError.new("Pseudo-header in trailers", stream_id) if is_trailer
           raise Errors::StreamError.new("Pseudo-header after regular header", stream_id) if seen_regular_header
