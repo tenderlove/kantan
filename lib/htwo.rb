@@ -3,6 +3,7 @@
 require "htwo/hpack"
 require "htwo/errors"
 require "htwo/stream"
+require "securerandom"
 
 module HTWO
   module Frames
@@ -83,6 +84,7 @@ module HTWO
     CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".b.freeze
 
     def initialize io, handler:
+      @name = SecureRandom.uuid
       @io = io
       @handler = handler
 
@@ -253,7 +255,10 @@ module HTWO
     # ── Write thread ──────────────────────────────────────────────────────
 
     def start_write_thread
-      @writer = Thread.new { write_loop(@io) }
+      @writer = Thread.new {
+        Thread.current.name = "writer - " + @name
+        write_loop(@io)
+      }
     end
 
     def write_loop io
@@ -449,7 +454,10 @@ module HTWO
     # ── Read thread ───────────────────────────────────────────────────────
 
     def start_read_thread
-      @reader = Thread.new { read_loop(@io) }
+      @reader = Thread.new {
+        Thread.current.name = "reader - " + @name
+        read_loop(@io)
+      }
     end
 
     def read_loop io
