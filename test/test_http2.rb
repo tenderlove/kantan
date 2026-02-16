@@ -163,6 +163,54 @@ class TestHTTP2 < Minitest::Test
     server_thread&.join(2)
   end
 
+  def test_padded_data_with_zero_length
+    client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
+    client_io.sync = true
+    server_io.sync = true
+
+    server_handler = TestServerHandler.new
+    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_thread = Thread.new { server_session.receive }
+
+    # Handshake
+    client_io.write "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    write_frame client_io, 0x04, 0, "" # SETTINGS
+    write_frame client_io, 0x04, 0, "", flags: 0x01 # SETTINGS ACK
+
+    # Open stream 1 with HEADERS
+    encoder = HTWO::HPACK.new
+    headers = encoder.encode([
+      [":method", "POST"],
+      [":path", "/"],
+      [":scheme", "https"],
+      [":authority", "localhost"],
+    ])
+    write_frame client_io, 0x01, 1, headers, flags: 0x04 # END_HEADERS
+
+    # Send padded DATA with zero length (flags: 0x08 = PADDED)
+    write_frame client_io, 0x00, 1, "", flags: 0x08
+    client_io.flush
+
+    # Expect GOAWAY with PROTOCOL_ERROR (0x1)
+    goaway_error = nil
+    deadline = Time.now + 5
+    while Time.now < deadline
+      type, _, _, payload = read_frame(client_io)
+      break unless type
+      if type == 0x07 # GOAWAY
+        _, goaway_error = payload.unpack("NN")
+        break
+      end
+    end
+
+    assert_equal 0x01, goaway_error, "Expected PROTOCOL_ERROR"
+
+  ensure
+    client_io&.close rescue nil
+    server_io&.close rescue nil
+    server_thread&.join(2)
+  end
+
   def test_data_on_unknown_stream
     client_io, server_io = Socket.pair(:UNIX, :STREAM, 0)
     client_io.sync = true

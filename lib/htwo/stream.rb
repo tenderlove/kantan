@@ -1,7 +1,7 @@
 require "htwo/errors"
 
 module HTWO
-  Stream = Struct.new(:id, :headers, :data, :session, :state, :window_size, :rst_received, :content_length, :received_end_stream, :pending_body) do
+  Stream = Struct.new(:id, :headers, :data_received, :session, :state, :window_size, :rst_received, :content_length, :received_end_stream, :pending_body) do
     def respond headers, body: nil
       session.send_response self, headers, body
     end

@@ -126,7 +126,7 @@ module HTWO
     def new_stream
       stream_id = @next_stream_id
       @next_stream_id += 2
-      stream = Stream.new(stream_id, nil, nil, self, :idle, @peer_settings.initial_window_size, false, nil, false)
+      stream = Stream.new(stream_id, nil, 0, self, :idle, @peer_settings.initial_window_size, false, nil, false)
       @streams[stream_id] = stream
       stream_id
     end
@@ -557,8 +557,8 @@ module HTWO
         # No padding, read all data
         chunk = io.read(len) if len > 0
       else
-        # Read pad length
-        return unless len > 0
+        # Padded frame must have at least 1 byte for pad length
+        raise Errors::ProtocolError.new("Padded DATA with zero length", 0) if len == 0
         pad_length = io.readbyte
 
         # Validate pad length
@@ -580,16 +580,15 @@ module HTWO
       end
 
       if chunk && chunk.bytesize > 0
-        stream.data ||= "".b
-        stream.data << chunk
+        stream.data_received += chunk.bytesize
         @handler.on_data stream, chunk
       end
 
       # If END_STREAM flag is set, half-close remote
       if flags.odd? # Bottom bit is set
         # Validate content-length if specified
-        if stream.content_length && stream.data
-          if stream.data.bytesize != stream.content_length
+        if stream.content_length
+          if stream.data_received != stream.content_length
             raise Errors::StreamError.new("Content-length mismatch", stream_id)
           end
         end
@@ -707,7 +706,7 @@ module HTWO
           @highest_stream_id = stream_id
         end
 
-        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings.initial_window_size, false, nil, false)
+        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, 0, self, :idle, @peer_settings.initial_window_size, false, nil, false)
 
         # Complete header block in this frame
         headers = @decoding_table.decode payload, payload_start, payload_len, max_list_size: MAX_HEADER_LIST_SIZE
@@ -728,8 +727,8 @@ module HTWO
         # If END_STREAM flag is set, half-close remote
         if flags.odd?
           # Validate content-length before closing
-          if stream.content_length && stream.data
-            if stream.data.bytesize != stream.content_length
+          if stream.content_length && stream.data_received
+            if stream.data_received != stream.content_length
               raise Errors::StreamError.new("Content-length mismatch", stream_id)
             end
           end
@@ -937,7 +936,7 @@ module HTWO
         @continuation_stream_id = nil
         @continuation_flags = nil
 
-        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, nil, self, :idle, @peer_settings.initial_window_size, false, nil, false)
+        stream = @streams[stream_id] ||= Stream.new(stream_id, nil, 0, self, :idle, @peer_settings.initial_window_size, false, nil, false)
 
         headers = @decoding_table.decode complete_payload, 0, complete_payload.bytesize, max_list_size: MAX_HEADER_LIST_SIZE
 
