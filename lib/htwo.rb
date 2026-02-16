@@ -555,7 +555,8 @@ module HTWO
       # Check for PADDED flag (bit 3)
       if flags[3].zero?
         # No padding, read all data
-        chunk = io.read(len) if len > 0
+        data_len = len
+        pad_length = 0
       else
         # Padded frame must have at least 1 byte for pad length
         raise Errors::ProtocolError.new("Padded DATA with zero length", 0) if len == 0
@@ -569,20 +570,17 @@ module HTWO
 
         # Read data (excluding pad length byte and padding)
         data_len = len - pad_length - 1
-        chunk = io.read(data_len) if data_len > 0
-
-        # Read and discard padding
-        io.read(pad_length) if pad_length > 0
       end
 
-      if len > 0
-        @write_queue << [:send_window_update, stream_id, len]
-      end
-
-      if chunk && chunk.bytesize > 0
-        stream.data_received += chunk.bytesize
+      if data_len > 0
+        chunk = io.read(data_len)
+        stream.data_received += data_len
         @handler.on_data stream, chunk
+        @write_queue << [:send_window_update, stream_id, data_len]
       end
+
+      # Read and discard padding
+      io.read(pad_length) if pad_length > 0
 
       # If END_STREAM flag is set, half-close remote
       if flags.odd? # Bottom bit is set
