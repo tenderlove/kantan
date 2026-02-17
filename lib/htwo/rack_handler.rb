@@ -30,6 +30,7 @@ module HTWO
       response_headers = [[":status", status.to_s]]
       headers.each do |key, value|
         next if key.start_with?("rack.")
+        key = key.downcase
         # Rack allows header values to be Arrays
         if value.is_a?(Array)
           value.each { |v| response_headers << [key, v] }

@@ -221,13 +221,15 @@ module HTWO
       start_read_thread
     end
 
-    def receive
+    def receive(preface_verified: false)
       @server_mode = true
-      preface = @io.read CONNECTION_PREFACE.bytesize
-      if preface != CONNECTION_PREFACE
-        send_goaway_frame @io, 0x1 # PROTOCOL_ERROR
-        @io.close
-        return
+      unless preface_verified
+        preface = @io.read CONNECTION_PREFACE.bytesize
+        if preface != CONNECTION_PREFACE
+          send_goaway_frame @io, 0x1 # PROTOCOL_ERROR
+          @io.close
+          return
+        end
       end
       @io.write Frames::Settings::DEFAULT_ENCODED
       start_write_thread
