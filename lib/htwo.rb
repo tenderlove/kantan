@@ -74,9 +74,6 @@ module HTWO
   end
 
   class Session
-    HEADER_BUFF = ("\0".b * 9).freeze
-    private_constant :HEADER_BUFF
-
     MAX_HEADER_LIST_SIZE = 65536
     MAX_PENDING_BODY_SIZE = 1_048_576
     WRITE_BUFFER_SIZE = 65536
@@ -461,11 +458,9 @@ module HTWO
     end
 
     def read_loop io
-      header_buff = HEADER_BUFF.dup
-
       while true
         begin
-          str = io.read(9, header_buff)
+          str = io.read(9)
         rescue IOError, Errno::ECONNRESET
           break
         end
