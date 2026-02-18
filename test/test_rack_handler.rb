@@ -3,7 +3,7 @@
 require_relative "helper"
 require 'rack'
 require 'concurrent'
-require 'htwo/rack_handler'
+require 'kantan/rack_handler'
 
 class TestRackHandler < Minitest::Test
   def setup
