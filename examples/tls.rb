@@ -52,17 +52,20 @@ class MyApp < Kantan::Handler
 end
 
 tcp_server = TCPServer.new("127.0.0.1", 8443)
-ssl_server = OpenSSL::SSL::SSLServer.new(tcp_server, ctx)
 
 logger.info "Listening on https://localhost:8443"
 logger.info "Test with: curl -k --http2 https://localhost:8443/"
 
 loop do
-  client = ssl_server.accept
-  client.to_io.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+  tcp_client = tcp_server.accept
+  tcp_client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
-  logger.info "new connection (ALPN: #{client.alpn_protocol})"
-  Thread.new(client) do |c|
+  ssl_socket = OpenSSL::SSL::SSLSocket.new(tcp_client, ctx)
+  ssl_socket.sync_close = true
+  ssl_socket.accept
+
+  logger.info "new connection (ALPN: #{ssl_socket.alpn_protocol})"
+  Thread.new(ssl_socket) do |c|
     session = Kantan::Session.new(c, handler: MyApp.new)
     session.receive
     session.join
