@@ -6,6 +6,57 @@ require "htwo/stream"
 require "securerandom"
 
 module HTWO
+  module Body
+    class Buffer
+      def initialize(string)
+        @string = string
+        @offset = 0
+      end
+
+      def read(n)
+        chunk = @string.byteslice(@offset, n)
+        @offset += n
+        chunk
+      end
+
+      def bytesize
+        @string.bytesize - @offset
+      end
+
+      def empty?
+        @offset >= @string.bytesize
+      end
+
+      def close
+      end
+    end
+
+    class File
+      def initialize(path)
+        @io = ::File.open(path, "rb")
+        @remaining = @io.size
+      end
+
+      def read(n)
+        chunk = @io.read(n)
+        @remaining -= chunk.bytesize
+        chunk
+      end
+
+      def bytesize
+        @remaining
+      end
+
+      def empty?
+        @remaining == 0
+      end
+
+      def close
+        @io.close
+      end
+    end
+  end
+
   module Frames
     NAMES = [
       :DATA,
@@ -137,6 +188,10 @@ module HTWO
       @write_queue << [:data, stream_id, body]
     end
 
+    def send_file stream_id, path
+      @write_queue << [:sendfile, stream_id, path]
+    end
+
     def request headers, body: nil
       stream_id = new_stream
       send_headers stream_id, headers, has_body: !!body
@@ -163,13 +218,15 @@ module HTWO
       start_read_thread
     end
 
-    def receive
+    def receive(preface_verified: false)
       @server_mode = true
-      preface = @io.read CONNECTION_PREFACE.bytesize
-      if preface != CONNECTION_PREFACE
-        send_goaway_frame @io, 0x1 # PROTOCOL_ERROR
-        @io.close
-        return
+      unless preface_verified
+        preface = @io.read CONNECTION_PREFACE.bytesize
+        if preface != CONNECTION_PREFACE
+          send_goaway_frame @io, 0x1 # PROTOCOL_ERROR
+          @io.close
+          return
+        end
       end
       @io.write Frames::Settings::DEFAULT_ENCODED
       start_write_thread
@@ -179,15 +236,6 @@ module HTWO
     def ping
       ts = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
       @write_queue << [:ping, [ts].pack("Q>")]
-    end
-
-    def send_response stream, headers, body
-      end_stream = !body
-      @write_queue << [:headers, stream.id, headers, end_stream]
-      if body
-        body = body.b if body.encoding != Encoding::BINARY
-        @write_queue << [:data, stream.id, body]
-      end
     end
 
     private
@@ -291,16 +339,21 @@ module HTWO
           end
 
         when :data
-          _, stream_id, body = cmd
+          _, stream_id, data = cmd
           stream = @streams[stream_id]
           next unless stream
 
-          if stream.pending_body
-            stream.pending_body << body
-          else
-            stream.pending_body = body.dup
-          end
-          @pending_body_size += body.bytesize
+          stream.body = Body::Buffer.new(data)
+          @pending_body_size += data.bytesize
+          flush_pending wbuf
+
+        when :sendfile
+          _, stream_id, path = cmd
+          stream = @streams[stream_id]
+          next unless stream
+
+          stream.body = Body::File.new(path)
+          @pending_body_size += stream.body.bytesize
           flush_pending wbuf
 
         when :ping
@@ -378,9 +431,10 @@ module HTWO
 
         when :close_stream
           _, stream = cmd
-          if stream.pending_body
-            @pending_body_size -= stream.pending_body.bytesize
-            stream.pending_body = nil
+          if stream.body
+            @pending_body_size -= stream.body.bytesize
+            stream.body.close
+            stream.body = nil
           end
 
         when :shutdown
@@ -402,17 +456,19 @@ module HTWO
 
     def flush_pending wbuf
       @streams.each_value do |stream|
-        next unless stream.pending_body
+        next unless stream.body
+        next if stream.body.empty?
 
-        while stream.pending_body && !stream.pending_body.empty?
+        while stream.body && !stream.body.empty?
           max_frame = @peer_settings.max_frame_size
-          send_size = [stream.pending_body.bytesize, max_frame, stream.window_size, @connection_window].min
+          send_size = [stream.body.bytesize, max_frame, stream.window_size, @connection_window].min
 
           if send_size <= 0
             if @pending_body_size > MAX_PENDING_BODY_SIZE
               [(4 << 8) | 0x3, 0, stream.id, 0x7].pack("NCNN", buffer: wbuf)
-              @pending_body_size -= stream.pending_body.bytesize
-              stream.pending_body = nil
+              @pending_body_size -= stream.body.bytesize
+              stream.body.close
+              stream.body = nil
               stream.close!
               @streams.delete(stream.id)
               @open_stream_count -= 1
@@ -420,9 +476,8 @@ module HTWO
             break
           end
 
-          chunk = stream.pending_body.byteslice(0, send_size)
-          remaining = stream.pending_body.bytesize - send_size
-          is_last = remaining == 0
+          chunk = stream.body.read(send_size)
+          is_last = stream.body.empty?
 
           flags = is_last ? 0x01 : 0x00
           len_type = (chunk.bytesize << 8) | 0x0
@@ -435,14 +490,13 @@ module HTWO
           @pending_body_size -= send_size
 
           if is_last
-            stream.pending_body = nil
+            stream.body.close
+            stream.body = nil
             stream.half_close_local!
             if stream.closed?
               @streams.delete(stream.id)
               @open_stream_count -= 1
             end
-          else
-            stream.pending_body = stream.pending_body.byteslice(send_size..)
           end
         end
       end
