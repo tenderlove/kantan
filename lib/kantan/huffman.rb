@@ -2,7 +2,7 @@
 # frozen_string_literal: false
 
 # Huffman coding for HPACK (RFC 7541 Appendix B)
-module HTWO
+module Kantan
   module Huffman
     # Huffman decoding tree built from RFC 7541 Appendix B
     # This is a simplified implementation using a lookup approach

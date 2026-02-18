@@ -1,6 +1,6 @@
 require "stringio"
 
-module HTWO
+module Kantan
   class RackHandler < Handler
     def initialize app, executor:, server_name:, server_port:, scheme: "https"
       @app = app

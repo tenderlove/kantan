@@ -1,9 +1,9 @@
-require "htwo"
+require "kantan"
 require "socket"
 require "logger"
 require "vernier"
 
-class MyApp < HTWO::Handler
+class MyApp < Kantan::Handler
   def on_request stream
     stream.respond [[":status", "200"]], body: "hello"
   end
@@ -22,7 +22,7 @@ logger.debug "new connection"
     client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
     Thread.new {
-      session = HTWO::Session.new(client, handler: MyApp.new)
+      session = Kantan::Session.new(client, handler: MyApp.new)
       session.receive
       session.join
     }

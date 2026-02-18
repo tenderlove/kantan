@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module HTWO
+module Kantan
   module Errors
     class Error < StandardError; end
 

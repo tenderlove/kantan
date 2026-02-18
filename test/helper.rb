@@ -2,9 +2,9 @@
 
 require 'minitest/autorun'
 require 'socket'
-require "htwo"
+require "kantan"
 
-class TestClientHandler < HTWO::Handler
+class TestClientHandler < Kantan::Handler
   attr_reader :queue
 
   def initialize
@@ -16,7 +16,7 @@ class TestClientHandler < HTWO::Handler
   def on_request(stream) = @queue << [:done, stream.id]
 end
 
-class TestServerHandler < HTWO::Handler
+class TestServerHandler < Kantan::Handler
   attr_accessor :on_request_block
 
   def on_request(stream)

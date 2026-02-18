@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require "htwo/huffman"
-require "htwo/errors"
+require "kantan/huffman"
+require "kantan/errors"
 
-module HTWO
+module Kantan
   class HPACK
     class DynamicTable # :nodoc:
       def initialize max_size

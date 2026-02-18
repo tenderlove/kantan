@@ -1,5 +1,5 @@
-require "htwo"
-require "htwo/rack_handler"
+require "kantan"
+require "kantan/rack_handler"
 require "socket"
 require "openssl"
 require "logger"
@@ -41,7 +41,7 @@ app = ->(env) {
 
 executor = Concurrent::FixedThreadPool.new(5)
 
-handler = HTWO::RackHandler.new(app,
+handler = Kantan::RackHandler.new(app,
   executor: executor,
   server_name: "localhost",
   server_port: 8443,
@@ -60,7 +60,7 @@ Vernier.profile(out: "time_profile.json") do
 
   logger.info "new connection (ALPN: #{client.alpn_protocol})"
   Thread.new(client) do |c|
-    session = HTWO::Session.new(c, handler: handler)
+    session = Kantan::Session.new(c, handler: handler)
     session.receive
     session.join
   rescue => e

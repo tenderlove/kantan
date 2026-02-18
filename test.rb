@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require "htwo"
+require "kantan"
 require "socket"
 require "logger"
 
-class MyApp < HTWO::Handler
+class MyApp < Kantan::Handler
   def on_request stream
     stream.respond [[":status", "200"]], body: "hello"
   end
@@ -24,7 +24,7 @@ while true
     c = Socket.for_fd(c_fd)
     c.autoclose = true
     c.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-    session = HTWO::Session.new(c, handler: MyApp.new)
+    session = Kantan::Session.new(c, handler: MyApp.new)
     session.receive
     session.join
   end

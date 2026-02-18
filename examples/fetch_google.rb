@@ -1,8 +1,8 @@
 require "socket"
 require "openssl"
-require "htwo"
+require "kantan"
 
-class ResponseHandler < HTWO::Handler
+class ResponseHandler < Kantan::Handler
   def initialize
     @responses = {}
     @done = Thread::Queue.new
@@ -54,7 +54,7 @@ unless ssl.alpn_protocol == "h2"
 end
 
 handler = ResponseHandler.new
-session = HTWO::Session.new(ssl, handler: handler)
+session = Kantan::Session.new(ssl, handler: handler)
 session.connect
 
 stream_id = session.request([
@@ -62,7 +62,7 @@ stream_id = session.request([
   [":path",      "/"],
   [":scheme",    "https"],
   [":authority", host],
-  ["user-agent", "htwo-demo/1.0"],
+  ["user-agent", "kantan-demo/1.0"],
   ["accept",     "*/*"],
 ])
 

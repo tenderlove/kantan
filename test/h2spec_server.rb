@@ -1,8 +1,8 @@
-require "htwo"
+require "kantan"
 require "socket"
 require "logger"
 
-class MyApp < HTWO::Handler
+class MyApp < Kantan::Handler
   def on_request stream
     Thread.new do
       if stream.headers.assoc(":path")&.last == "/quit"
@@ -28,7 +28,7 @@ while true
 
   logger.debug "new connection"
   Thread.new(client) do |c|
-    session = HTWO::Session.new(c, handler: MyApp.new)
+    session = Kantan::Session.new(c, handler: MyApp.new)
     session.receive
   end
 end

@@ -20,7 +20,7 @@ class TestRackHandler < Minitest::Test
     client_io.sync = true
     server_io.sync = true
 
-    handler = HTWO::RackHandler.new(rack_app,
+    handler = Kantan::RackHandler.new(rack_app,
       executor: @executor,
       server_name: "localhost",
       server_port: 443,
@@ -28,8 +28,8 @@ class TestRackHandler < Minitest::Test
 
     client_handler = TestClientHandler.new
 
-    server_session = HTWO::Session.new(server_io, handler: handler)
-    client_session = HTWO::Session.new(client_io, handler: client_handler)
+    server_session = Kantan::Session.new(server_io, handler: handler)
+    client_session = Kantan::Session.new(client_io, handler: client_handler)
 
     server_thread = Thread.new { server_session.receive }
     client_session.connect

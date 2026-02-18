@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require "htwo/hpack"
-require "htwo/errors"
-require "htwo/stream"
+require "kantan/hpack"
+require "kantan/errors"
+require "kantan/stream"
 require "securerandom"
 
-module HTWO
+module Kantan
   module Body
     class Buffer
       def initialize(string)

@@ -9,7 +9,7 @@ socket = TCPSocket.new('localhost', 8080)
 puts "Connected to localhost:8080"
 
 # Create HTTP/2 client with the socket
-http2_client = HTWO::Client.new(socket)
+http2_client = Kantan::Client.new(socket)
 
 # Track responses
 responses = {}

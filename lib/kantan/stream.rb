@@ -1,6 +1,6 @@
-require "htwo/errors"
+require "kantan/errors"
 
-module HTWO
+module Kantan
   Stream = Struct.new(:id, :headers, :data_received, :session, :state, :window_size, :rst_received, :content_length, :received_end_stream, :body) do
     def send_headers headers, has_body: false
       session.send_headers id, headers, has_body: has_body

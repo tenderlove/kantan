@@ -73,7 +73,7 @@ def run_tls_server
     Thread.new do
       begin
         # Create HTTP/2 server with the SSL socket
-        http2_server = HTWO::Server.new(ssl_socket)
+        http2_server = Kantan::Server.new(ssl_socket)
 
         http2_server.on_headers do |stream, headers|
           puts "\n[Stream #{stream.id}] Headers:"
@@ -140,7 +140,7 @@ def run_tls_client
   puts "  Cipher: #{ssl_socket.cipher[0]}"
 
   # Create HTTP/2 client with the SSL socket
-  http2_client = HTWO::Client.new(ssl_socket)
+  http2_client = Kantan::Client.new(ssl_socket)
 
   http2_client.on_headers do |stream, headers|
     puts "\n[Stream #{stream.id}] Response headers:"

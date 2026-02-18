@@ -1,4 +1,4 @@
-# HTTP/2 - Pure Ruby Implementation
+# Kantan - Pure Ruby HTTP/2 Implementation
 
 HTTP/2 server and client implementation in pure Ruby.
 
@@ -15,11 +15,11 @@ See `examples/fetch_google.rb`
 Just a demo server:
 
 ```ruby
-require "htwo"
+require "kantan"
 require "socket"
 require "logger"
 
-class MyApp < HTWO::Handler
+class MyApp < Kantan::Handler
   def on_request stream
     stream.respond [[":status", "200"]], body: "hello"
   end
@@ -37,7 +37,7 @@ while true
 
   logger.debug "new connection"
   Thread.new(client) do |c|
-    session = HTWO::Session.new(c, handler: MyApp.new)
+    session = Kantan::Session.new(c, handler: MyApp.new)
     session.receive
   end
 end

@@ -4,8 +4,8 @@ require_relative "helper"
 
 class TestHTTP2 < Minitest::Test
   def test_hpack_encoding_decoding
-    encoder = HTWO::HPACK.new
-    decoder = HTWO::HPACK.new
+    encoder = Kantan::HPACK.new
+    decoder = Kantan::HPACK.new
 
     headers = [[":method", "GET"], [":path", "/"]]
     encoded = encoder.encode(headers)
@@ -33,7 +33,7 @@ class TestHTTP2 < Minitest::Test
     server_io.sync = true
 
     server_handler = TestServerHandler.new
-    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_session = Kantan::Session.new(server_io, handler: server_handler)
     server_thread = Thread.new { server_session.receive }
 
     # Handshake
@@ -83,7 +83,7 @@ class TestHTTP2 < Minitest::Test
       stream.respond [[":status", "200"]], body: body
     }
 
-    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_session = Kantan::Session.new(server_io, handler: server_handler)
     server_thread = Thread.new { server_session.receive }
 
     # Handshake
@@ -101,7 +101,7 @@ class TestHTTP2 < Minitest::Test
     client_io.flush
 
     # Read server's SETTINGS and ACK it
-    encoder = HTWO::HPACK.new
+    encoder = Kantan::HPACK.new
 
     # Send requests until we get a RST_STREAM back
     rst_stream_error = nil
@@ -147,7 +147,7 @@ class TestHTTP2 < Minitest::Test
     server_io.sync = true
 
     server_handler = TestServerHandler.new
-    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_session = Kantan::Session.new(server_io, handler: server_handler)
     server_thread = Thread.new { server_session.receive }
 
     # Handshake
@@ -156,7 +156,7 @@ class TestHTTP2 < Minitest::Test
     write_frame client_io, 0x04, 0, "", flags: 0x01 # SETTINGS ACK
 
     # Open stream 1 with HEADERS
-    encoder = HTWO::HPACK.new
+    encoder = Kantan::HPACK.new
     headers = encoder.encode([
       [":method", "POST"],
       [":path", "/"],
@@ -195,7 +195,7 @@ class TestHTTP2 < Minitest::Test
     server_io.sync = true
 
     server_handler = TestServerHandler.new
-    server_session = HTWO::Session.new(server_io, handler: server_handler)
+    server_session = Kantan::Session.new(server_io, handler: server_handler)
     server_thread = Thread.new { server_session.receive }
 
     # Handshake
@@ -239,8 +239,8 @@ class TestHTTP2 < Minitest::Test
 
     client_handler = TestClientHandler.new
 
-    server_session = HTWO::Session.new(server_io, handler: server_handler)
-    client_session = HTWO::Session.new(client_io, handler: client_handler)
+    server_session = Kantan::Session.new(server_io, handler: server_handler)
+    client_session = Kantan::Session.new(client_io, handler: client_handler)
 
     server_thread = Thread.new { server_session.receive }
     client_session.connect
