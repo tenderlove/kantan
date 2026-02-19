@@ -124,6 +124,21 @@ module Kantan
     def on_close; end
   end
 
+  # The +io+ object passed to Session must implement the following methods:
+  #
+  #   read(n)        Read exactly +n+ bytes, blocking until all bytes are
+  #                  available. Returns a binary-encoded String, or +nil+ at
+  #                  EOF.
+  #
+  #   readbyte       Read and return a single byte as an Integer (0-255).
+  #                  Raises EOFError at end of stream.
+  #
+  #   write(data)    Write +data+ (a binary String) to the peer.
+  #
+  #   close          Close the underlying transport.
+  #
+  # Any Ruby IO, TCPSocket, OpenSSL::SSL::SSLSocket, or one half of a
+  # Socket.pair(:UNIX, :STREAM) satisfies this interface out of the box.
   class Session
     MAX_HEADER_LIST_SIZE = 65536
     MAX_PENDING_BODY_SIZE = 1_048_576
@@ -832,31 +847,32 @@ module Kantan
 
       raise Errors::FrameSizeError.new("SETTINGS length not multiple of 6", len) if (len % 6) != 0
 
-      read = 0
-      s = "\0".b * 6
+      payload = io.read(len)
       parsed = {}
+      offset = 0
 
-      while read < len
-        ident, value = io.read(6, s).unpack("nN")
+      while offset < len
+        ident = payload.unpack1("n", offset: offset)
+        value = payload.unpack1("N", offset: offset + 2)
 
         # Validate parameter values
         case ident
         when 0x2 # SETTINGS_ENABLE_PUSH
           unless value == 0 || value == 1
-            raise Errors::ProtocolError.new("ENABLE_PUSH must be 0 or 1", len - read - 6)
+            raise Errors::ProtocolError.new("ENABLE_PUSH must be 0 or 1", len - offset - 6)
           end
         when 0x4 # SETTINGS_INITIAL_WINDOW_SIZE
           if value > 0x7FFF_FFFF
-            raise Errors::FlowControlError.new("INITIAL_WINDOW_SIZE too large", len - read - 6)
+            raise Errors::FlowControlError.new("INITIAL_WINDOW_SIZE too large", len - offset - 6)
           end
         when 0x5 # SETTINGS_MAX_FRAME_SIZE
           if value < 16384 || value > 16777215
-            raise Errors::ProtocolError.new("MAX_FRAME_SIZE out of range", len - read - 6)
+            raise Errors::ProtocolError.new("MAX_FRAME_SIZE out of range", len - offset - 6)
           end
         end
 
         parsed[ident] = value
-        read += 6
+        offset += 6
       end
 
       @write_queue << [:settings, parsed]
