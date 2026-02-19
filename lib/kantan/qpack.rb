@@ -456,5 +456,317 @@ module Kantan
         @known_received_count = ric if ric > @known_received_count
       end
     end
+
+    class Encoder
+      def initialize max_table_capacity
+        @max_table_capacity = max_table_capacity
+        @capacity = max_table_capacity
+        @entries = []
+        @size = 0
+        @total_inserts = 0
+        @dropped = 0
+        @known_received_count = 0
+        @unacked_streams = {} # stream_id => required_insert_count
+
+        # Hash indexes for fast lookup
+        @full_index = {} # {name => {value => absolute_index}}
+        @name_index = {} # {name => absolute_index}
+
+        @capacity_sent = false
+      end
+
+      # Encode headers for a stream. Returns [encoder_stream_data, field_section_data].
+      def encode stream_id, headers
+        enc_stream = "".b
+        field_lines = "".b
+
+        # Send capacity once at start
+        if !@capacity_sent && @capacity > 0
+          encode_prefixed_integer(enc_stream, @capacity, 5, 0x20)
+          @capacity_sent = true
+        end
+
+        base = @total_inserts
+        highest_ref = -1
+        lowest_ref = base # tracks lowest absolute index referenced
+
+        headers.each do |name, value|
+          # 1. Exact match in static table
+          si = static_kv_index(name, value)
+          if si
+            encode_prefixed_integer(field_lines, si, 6, 0xC0)
+            next
+          end
+
+          # 2. Exact match in dynamic table (pre-base only)
+          abs = @full_index.dig(name, value)
+          if abs && abs >= @dropped && abs < base
+            rel = base - abs - 1
+            encode_prefixed_integer(field_lines, rel, 6, 0x80)
+            highest_ref = abs if abs > highest_ref
+            lowest_ref = abs if abs < lowest_ref
+            next
+          end
+
+          sensitive = sensitive?(name, value)
+          can_insert = !sensitive && can_insert_safely?(name, value, lowest_ref)
+
+          # 3. Name match in static table
+          sni = static_name_index(name)
+          if sni
+            if sensitive
+              encode_prefixed_integer(field_lines, sni, 4, 0x70)
+            else
+              encode_prefixed_integer(field_lines, sni, 4, 0x50)
+            end
+            encode_string(field_lines, value)
+
+            if can_insert
+              encode_prefixed_integer(enc_stream, sni, 6, 0xC0)
+              encode_string(enc_stream, value)
+              insert(name, value)
+            end
+            next
+          end
+
+          # 4. Name match in dynamic table (pre-base only)
+          name_abs = @name_index[name]
+          if name_abs && name_abs >= @dropped && name_abs < base
+            name_rel = base - name_abs - 1
+            highest_ref = name_abs if name_abs > highest_ref
+            lowest_ref = name_abs if name_abs < lowest_ref
+            if sensitive
+              encode_prefixed_integer(field_lines, name_rel, 4, 0x60)
+            else
+              encode_prefixed_integer(field_lines, name_rel, 4, 0x40)
+            end
+            encode_string(field_lines, value)
+
+            if can_insert
+              ins_rel = @total_inserts - name_abs - 1
+              encode_prefixed_integer(enc_stream, ins_rel, 6, 0x80)
+              encode_string(enc_stream, value)
+              insert(name, value)
+            end
+            next
+          end
+
+          # 5. No match — literal with literal name
+          if sensitive
+            encode_string_with_prefix(field_lines, name, 3, 0x30)
+          else
+            encode_string_with_prefix(field_lines, name, 3, 0x20)
+          end
+          encode_string(field_lines, value)
+
+          if can_insert
+            encode_string_with_prefix(enc_stream, name, 5, 0x40)
+            encode_string(enc_stream, value)
+            insert(name, value)
+          end
+        end
+
+        # Build field section prefix
+        ric = highest_ref >= 0 ? highest_ref + 1 : 0
+
+        if ric == 0
+          encoded_ric = 0
+        else
+          max_entries = @max_table_capacity / 32
+          encoded_ric = (ric % (2 * max_entries)) + 1
+        end
+
+        prefix = "".b
+        encode_prefixed_integer(prefix, encoded_ric, 8, 0x00)
+        delta_base = ric > 0 ? base - ric : 0
+        encode_prefixed_integer(prefix, delta_base, 7, 0x00)
+
+        field_section = prefix + field_lines
+
+        @unacked_streams[stream_id] = ric if ric > 0
+
+        [enc_stream, field_section]
+      end
+
+      # Process decoder stream data (section acks, insert count increments).
+      def feed_decoder data
+        pos = 0
+        final = data.bytesize
+
+        while pos < final
+          byte = data.getbyte(pos)
+
+          if byte >= 0x80
+            # Section Acknowledgment: 1 + 7-bit stream_id
+            stream_id = byte & 0x7F
+            if stream_id == 127
+              stream_id, pos = read_continuation(data, pos + 1, 127)
+            else
+              pos += 1
+            end
+
+            ric = @unacked_streams.delete(stream_id)
+            @known_received_count = ric if ric && ric > @known_received_count
+
+          elsif byte >= 0x40
+            # Stream Cancellation: 01 + 6-bit stream_id
+            stream_id = byte & 0x3F
+            if stream_id == 63
+              stream_id, pos = read_continuation(data, pos + 1, 63)
+            else
+              pos += 1
+            end
+            @unacked_streams.delete(stream_id)
+
+          else
+            # Insert Count Increment: 00 + 6-bit increment
+            increment = byte & 0x3F
+            if increment == 63
+              increment, pos = read_continuation(data, pos + 1, 63)
+            else
+              pos += 1
+            end
+            @known_received_count += increment
+          end
+        end
+      end
+
+      private
+
+      SENSITIVE_NAMES = { ":path" => true, "content-length" => true, "etag" => true,
+                          "set-cookie" => true, "authorization" => true }.freeze
+
+      def sensitive? name, value
+        return true if SENSITIVE_NAMES[name]
+        name == "cookie" && !value.empty?
+      end
+
+      # Check if inserting would evict an entry we've referenced in this field section
+      def can_insert_safely? name, value, lowest_ref
+        entry_size = name.bytesize + value.bytesize + 32
+        return true if @size + entry_size <= @capacity
+
+        # Simulate eviction to see what would be dropped
+        remaining = @size + entry_size - @capacity
+        i = 0
+        while remaining > 0 && i < @entries.length
+          abs = @dropped + i
+          return false if abs >= lowest_ref
+          n, v = @entries[i]
+          remaining -= n.bytesize + v.bytesize + 32
+          i += 1
+        end
+        remaining <= 0
+      end
+
+      def insert name, value
+        @entries << [name, value]
+        @size += name.bytesize + value.bytesize + 32
+        abs = @total_inserts
+        (@full_index[name] ||= {})[value] = abs
+        @name_index[name] = abs
+        @total_inserts += 1
+        evict
+      end
+
+      def evict
+        while @size > @capacity && !@entries.empty?
+          evicted_name, evicted_value = @entries.shift
+          evicted_abs = @dropped
+          @dropped += 1
+          @size -= evicted_name.bytesize + evicted_value.bytesize + 32
+          if (inner = @full_index[evicted_name]) && inner[evicted_value] == evicted_abs
+            inner.delete(evicted_value)
+            @full_index.delete(evicted_name) if inner.empty?
+          end
+          @name_index.delete(evicted_name) if @name_index[evicted_name] == evicted_abs
+        end
+      end
+
+      def encode_prefixed_integer out, value, prefix_bits, pattern
+        max = (1 << prefix_bits) - 1
+        if value < max
+          [pattern | value].pack("C", buffer: out)
+        else
+          [pattern | max, value - max].pack("CR", buffer: out)
+        end
+      end
+
+      def encode_string out, str
+        huffed = Huffman.encode(str)
+        if huffed.bytesize < str.bytesize
+          len = huffed.bytesize
+          if len < 127
+            [0x80 | len].pack("C", buffer: out)
+          else
+            [0xFF, len - 127].pack("CR", buffer: out)
+          end
+          out << huffed
+        else
+          len = str.bytesize
+          if len < 127
+            [len].pack("C", buffer: out)
+          else
+            [0x7F, len - 127].pack("CR", buffer: out)
+          end
+          out << str
+        end
+      end
+
+      def encode_string_with_prefix out, str, prefix_bits, pattern
+        huffed = Huffman.encode(str)
+        mask = (1 << prefix_bits) - 1
+        huff_bit = 1 << prefix_bits
+
+        if huffed.bytesize < str.bytesize
+          len = huffed.bytesize
+          if len < mask
+            [pattern | huff_bit | len].pack("C", buffer: out)
+          else
+            [pattern | huff_bit | mask, len - mask].pack("CR", buffer: out)
+          end
+          out << huffed
+        else
+          len = str.bytesize
+          if len < mask
+            [pattern | len].pack("C", buffer: out)
+          else
+            [pattern | mask, len - mask].pack("CR", buffer: out)
+          end
+          out << str
+        end
+      end
+
+      def read_continuation data, pos, base
+        remainder, pos = data.unpack("R^", offset: pos)
+        raise "truncated integer" unless remainder
+        [base + remainder, pos]
+      end
+
+      # --- Static table lookups (generated) ---
+
+      m = STATIC_TABLE.each_with_object({}).with_index do |((k, v), o), i|
+        (o[k] ||= {})[v] = i
+      end
+
+      kv_code = "case name\n" + m.map { |key, values|
+        "when #{key.dump}" +
+        if values.length == 1
+          " then value == #{values.keys.first.dump} ? #{values.values.first} : nil"
+        else
+          "\n  case value\n" +
+            values.map { |v, n| "  when #{v.dump} then #{n}" }.join("\n") +
+            "\n  end"
+        end
+      }.join("\n") + "\nend"
+
+      class_eval "private def static_kv_index name, value\n#{kv_code}\nend", __FILE__, __LINE__
+
+      name_code = "case name\n" + m.map { |key, values|
+        "when #{key.dump} then #{values.values.first}"
+      }.join("\n") + "\nend"
+
+      class_eval "private def static_name_index name\n#{name_code}\nend", __FILE__, __LINE__
+    end
   end
 end

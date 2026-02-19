@@ -259,5 +259,228 @@ module Kantan
         assert_raises(DecompressionFailed) { decoder.feed_header(4, data) }
       end
     end
+
+    class TestEncoder < Minitest::Test
+      FIXTURE_BASE = File.expand_path("fixtures/qifs", __dir__)
+      QIF_DIR = File.join(FIXTURE_BASE, "qifs")
+
+      # Helper: encode with Encoder, decode with Decoder, return decoded headers
+      def round_trip headers, capacity: 4096, stream_id: 4
+        encoder = Encoder.new(capacity)
+        decoder = Decoder.new(capacity, 100)
+
+        enc_data, field_section = encoder.encode(stream_id, headers)
+        decoder.feed_encoder(enc_data) unless enc_data.empty?
+        _, decoded = decoder.feed_header(stream_id, field_section)
+        decoded
+      end
+
+      # --- Round-trip tests ---
+
+      def test_round_trip_static_only
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":status", "200"],
+        ]
+        assert_equal headers, round_trip(headers)
+      end
+
+      def test_round_trip_static_only_no_inserts
+        encoder = Encoder.new(4096)
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":path", "/"],
+          [":status", "200"],
+        ]
+        enc_data, field_section = encoder.encode(4, headers)
+        decoder = Decoder.new(4096, 100)
+        decoder.feed_encoder(enc_data)
+        _, decoded = decoder.feed_header(4, field_section)
+        assert_equal headers, decoded
+      end
+
+      def test_round_trip_with_dynamic_inserts
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":authority", "example.com"],
+          ["x-custom", "hello"],
+        ]
+        assert_equal headers, round_trip(headers)
+      end
+
+      def test_round_trip_sensitive_headers
+        headers = [
+          [":method", "POST"],
+          [":path", "/api/users"],
+          ["content-length", "42"],
+          ["authorization", "Bearer token123"],
+        ]
+        assert_equal headers, round_trip(headers)
+      end
+
+      def test_round_trip_literal_names
+        headers = [
+          ["x-custom-one", "value1"],
+          ["x-custom-two", "value2"],
+        ]
+        assert_equal headers, round_trip(headers)
+      end
+
+      # --- Dynamic table reuse across streams ---
+
+      def test_dynamic_table_reuse
+        encoder = Encoder.new(4096)
+        decoder = Decoder.new(4096, 100)
+
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":authority", "example.com"],
+        ]
+
+        # First encode — inserts :authority example.com
+        enc1, fs1 = encoder.encode(4, headers)
+        decoder.feed_encoder(enc1)
+        _, decoded1 = decoder.feed_header(4, fs1)
+        assert_equal headers, decoded1
+
+        # Second encode — should reuse dynamic table entry (smaller encoder stream)
+        enc2, fs2 = encoder.encode(8, headers)
+        decoder.feed_encoder(enc2) unless enc2.empty?
+        _, decoded2 = decoder.feed_header(8, fs2)
+        assert_equal headers, decoded2
+
+        # Second encode should produce less encoder stream data (no new inserts for :authority)
+        assert_operator enc2.bytesize, :<, enc1.bytesize
+      end
+
+      # --- Section acknowledgment ---
+
+      def test_section_ack
+        encoder = Encoder.new(4096)
+        decoder = Decoder.new(4096, 100)
+
+        headers = [[":method", "GET"], [":authority", "example.com"]]
+
+        # First encode — inserts into dynamic table, but field section uses literal form
+        enc1, fs1 = encoder.encode(4, headers)
+        decoder.feed_encoder(enc1)
+        _, _ = decoder.feed_header(4, fs1)
+
+        # Second encode — reuses dynamic entry via indexed dynamic, producing ric > 0
+        enc2, fs2 = encoder.encode(8, headers)
+        decoder.feed_encoder(enc2) unless enc2.empty?
+        decoder_data2, _ = decoder.feed_header(8, fs2)
+
+        # Second field section references dynamic table, so decoder produces section ack
+        refute_empty decoder_data2
+
+        # Feed ack back to encoder
+        encoder.feed_decoder(decoder_data2)
+      end
+
+      def test_insert_count_increment
+        encoder = Encoder.new(4096)
+        # Build an insert count increment: 00 + 6-bit value of 5
+        data = "\x05".b
+        encoder.feed_decoder(data)
+      end
+
+      def test_stream_cancellation
+        encoder = Encoder.new(4096)
+        headers = [[":method", "GET"], [":authority", "example.com"]]
+        encoder.encode(4, headers)
+
+        # Stream cancellation for stream 4: 01 + 6-bit stream_id
+        data = [0x40 | 4].pack("C")
+        encoder.feed_decoder(data)
+      end
+
+      # --- Zero-capacity table ---
+
+      def test_zero_capacity
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":path", "/"],
+        ]
+        assert_equal headers, round_trip(headers, capacity: 0)
+      end
+
+      def test_zero_capacity_custom_header
+        headers = [
+          [":method", "GET"],
+          ["x-custom", "value"],
+        ]
+        assert_equal headers, round_trip(headers, capacity: 0)
+      end
+
+      # --- Multiple header lists ---
+
+      def test_multiple_header_lists
+        encoder = Encoder.new(4096)
+        decoder = Decoder.new(4096, 100)
+
+        lists = [
+          [[":method", "GET"], [":scheme", "https"], [":path", "/"], [":authority", "example.com"]],
+          [[":method", "POST"], [":scheme", "https"], [":path", "/api"], [":authority", "example.com"]],
+          [[":method", "GET"], [":scheme", "https"], [":path", "/about"], [":authority", "example.com"]],
+        ]
+
+        lists.each_with_index do |headers, i|
+          stream_id = (i + 1) * 4
+          enc_data, fs = encoder.encode(stream_id, headers)
+          decoder.feed_encoder(enc_data) unless enc_data.empty?
+          dec_data, decoded = decoder.feed_header(stream_id, fs)
+          encoder.feed_decoder(dec_data) unless dec_data.empty?
+          assert_equal headers, decoded, "header list #{i} mismatch"
+        end
+      end
+
+      # --- QIF round-trip ---
+
+      def self.parse_qif(path)
+        header_lists = []
+        current = []
+
+        File.foreach(path, chomp: true) do |line|
+          if line.empty?
+            header_lists << current unless current.empty?
+            current = []
+          elsif !line.start_with?("#")
+            name, value = line.split("\t", 2)
+            current << [name, value || ""]
+          end
+        end
+        header_lists << current unless current.empty?
+        header_lists
+      end
+
+      if File.directory?(QIF_DIR)
+        Dir.glob(File.join(QIF_DIR, "*.qif")).sort.each do |qif_path|
+          qif_name = File.basename(qif_path, ".qif")
+
+          define_method("test_qif_round_trip_#{qif_name}") do
+            header_lists = self.class.parse_qif(qif_path)
+            next if header_lists.empty?
+
+            encoder = Encoder.new(4096)
+            decoder = Decoder.new(4096, 100)
+
+            header_lists.each_with_index do |headers, i|
+              stream_id = (i + 1) * 4
+              enc_data, fs = encoder.encode(stream_id, headers)
+              decoder.feed_encoder(enc_data) unless enc_data.empty?
+              decoder_data, decoded = decoder.feed_header(stream_id, fs)
+              encoder.feed_decoder(decoder_data) unless decoder_data.empty?
+              assert_equal headers, decoded, "#{qif_name}: header list #{i} mismatch"
+            end
+          end
+        end
+      end
+    end
   end
 end
