@@ -4,3 +4,6 @@
 [submodule "h2spec"]
 	path = h2spec
 	url = https://github.com/summerwind/h2spec.git
+[submodule "test/fixtures/qifs"]
+	path = test/fixtures/qifs
+	url = https://github.com/qpackers/qifs.git
