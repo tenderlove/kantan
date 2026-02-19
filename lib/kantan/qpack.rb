@@ -446,7 +446,7 @@ module Kantan
       def encode_prefixed_integer out, value, prefix_bits, pattern
         max = (1 << prefix_bits) - 1
         if value < max
-          [pattern | value].pack("C", buffer: out)
+          out << (pattern | value)
         else
           [pattern | max, value - max].pack("CR", buffer: out)
         end
@@ -686,7 +686,7 @@ module Kantan
       def encode_prefixed_integer out, value, prefix_bits, pattern
         max = (1 << prefix_bits) - 1
         if value < max
-          [pattern | value].pack("C", buffer: out)
+          out << (pattern | value)
         else
           [pattern | max, value - max].pack("CR", buffer: out)
         end
@@ -697,7 +697,7 @@ module Kantan
         if huffed.bytesize < str.bytesize
           len = huffed.bytesize
           if len < 127
-            [0x80 | len].pack("C", buffer: out)
+            out << (0x80 | len)
           else
             [0xFF, len - 127].pack("CR", buffer: out)
           end
@@ -705,7 +705,7 @@ module Kantan
         else
           len = str.bytesize
           if len < 127
-            [len].pack("C", buffer: out)
+            out << len
           else
             [0x7F, len - 127].pack("CR", buffer: out)
           end
@@ -721,7 +721,7 @@ module Kantan
         if huffed.bytesize < str.bytesize
           len = huffed.bytesize
           if len < mask
-            [pattern | huff_bit | len].pack("C", buffer: out)
+            out << (pattern | huff_bit | len)
           else
             [pattern | huff_bit | mask, len - mask].pack("CR", buffer: out)
           end
@@ -729,7 +729,7 @@ module Kantan
         else
           len = str.bytesize
           if len < mask
-            [pattern | len].pack("C", buffer: out)
+            out << (pattern | len)
           else
             [pattern | mask, len - mask].pack("CR", buffer: out)
           end
