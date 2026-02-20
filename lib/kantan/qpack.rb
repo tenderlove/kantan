@@ -242,12 +242,13 @@ module Kantan
 
       # Resume decoding a previously blocked stream.
       def resume_header stream_id
-        saved = @blocked.delete(stream_id)
+        saved = @blocked[stream_id]
         raise DecompressionFailed, "no blocked data for stream #{stream_id}" unless saved
 
         data, ric = saved
         raise DecompressionFailed, "stream still blocked" if ric > @total_inserts
 
+        @blocked.delete(stream_id)
         _, base, pos = decode_prefix(data)
         headers = decode_field_lines(data, pos, data.bytesize, base)
         decoder_data = ric > 0 ? encode_section_ack(stream_id) : "".b

@@ -259,6 +259,29 @@ module Kantan
         assert_raises(DecompressionFailed) { decoder.feed_header(4, data) }
       end
 
+      def test_resume_after_failed_resume_still_unblocks
+        decoder = Decoder.new(4096, 1)
+
+        # Field section referencing dynamic entry not yet inserted (ric=1)
+        data = "\x02\x80\x10".b
+        assert_raises(StreamBlocked) { decoder.feed_header(4, data) }
+
+        # First resume attempt — still blocked (no inserts yet)
+        assert_raises(DecompressionFailed) { decoder.resume_header(4) }
+
+        # Feed encoder data to insert the entry
+        enc = "\x3f\xe1\x1f".b           # set capacity 4096
+        enc << "\xc0\x0bexample.com".b    # insert with static ref 0
+        unblocked = decoder.feed_encoder(enc)
+
+        # Stream 4 must appear in unblocked list despite the earlier failed resume
+        assert_includes unblocked, 4
+
+        # Resume now succeeds
+        _, headers = decoder.resume_header(4)
+        assert_equal [[":authority", "example.com"]], headers
+      end
+
       def test_feed_encoder_handles_partial_data
         decoder = Decoder.new(4096, 100)
 
