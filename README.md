@@ -17,6 +17,8 @@ An example using HTTP/3 is here: `examples/quic_fetch.rb`
 Just a demo server:
 
 ```ruby
+# frozen_string_literal: true
+
 require "kantan"
 require "socket"
 require "logger"
@@ -34,13 +36,16 @@ logger = Logger.new $stderr
 logger.debug "port #{port}"
 
 while true
-  client = server.accept
-  client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+  client_fd = server.sysaccept
 
   logger.debug "new connection"
-  Thread.new(client) do |c|
-    session = Kantan::H2::Session.new(c, handler: MyApp.new)
+  Ractor.new(client_fd) do |c_fd|
+    c = Socket.for_fd(c_fd)
+    c.autoclose = true
+    c.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+    session = Kantan::Session.new(c, handler: MyApp.new)
     session.receive
+    session.join
   end
 end
 ```
