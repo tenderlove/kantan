@@ -6,6 +6,7 @@ module Kantan
   module QPACK
     class EncoderStreamError < StandardError; end
     class DecompressionFailed < StandardError; end
+    class Truncated < DecompressionFailed; end
 
     class StreamBlocked < StandardError
       attr_reader :stream_id
@@ -156,7 +157,7 @@ module Kantan
               static = byte & 0x40 != 0
               idx = byte & 0x3F
               if idx == 63
-                idx, pos = read_continuation(data, pos + 1, 63, EncoderStreamError)
+                idx, pos = read_continuation(data, pos + 1, 63)
               else
                 pos += 1
               end
@@ -183,7 +184,7 @@ module Kantan
               # 001_____ — Set dynamic table capacity (5-bit prefix)
               capacity = byte & 0x1F
               if capacity == 31
-                capacity, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
+                capacity, pos = read_continuation(data, pos + 1, 31)
               else
                 pos += 1
               end
@@ -195,7 +196,7 @@ module Kantan
               # 000_____ — Duplicate (5-bit prefix)
               rel = byte & 0x1F
               if rel == 31
-                rel, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
+                rel, pos = read_continuation(data, pos + 1, 31)
               else
                 pos += 1
               end
@@ -205,9 +206,8 @@ module Kantan
               insert(entry[0], entry[1])
             end
 
-          rescue DecompressionFailed, EncoderStreamError => e
-            raise unless e.message.include?("truncated")
-            # Truncated instruction — buffer remaining data for next call
+          rescue Truncated
+            # Incomplete instruction — buffer remaining data for next call
             @encoder_buf = data.byteslice(start_pos, final - start_pos)
             break
           end
@@ -280,7 +280,7 @@ module Kantan
         encoded_ric = data.getbyte(0)
         pos = 1
         if encoded_ric == 255
-          encoded_ric, pos = read_continuation(data, pos, 255, DecompressionFailed)
+          encoded_ric, pos = read_continuation(data, pos, 255)
         end
 
         # S bit + Delta Base (7-bit prefix integer)
@@ -290,7 +290,7 @@ module Kantan
         delta_base = byte2 & 0x7F
         pos += 1
         if delta_base == 127
-          delta_base, pos = read_continuation(data, pos, 127, DecompressionFailed)
+          delta_base, pos = read_continuation(data, pos, 127)
         end
 
         if encoded_ric == 0
@@ -334,7 +334,7 @@ module Kantan
             static = byte & 0x40 != 0
             idx = byte & 0x3F
             if idx == 63
-              idx, pos = read_continuation(data, pos + 1, 63, DecompressionFailed)
+              idx, pos = read_continuation(data, pos + 1, 63)
             else
               pos += 1
             end
@@ -353,7 +353,7 @@ module Kantan
             static = byte & 0x10 != 0
             name_idx = byte & 0x0F
             if name_idx == 15
-              name_idx, pos = read_continuation(data, pos + 1, 15, DecompressionFailed)
+              name_idx, pos = read_continuation(data, pos + 1, 15)
             else
               pos += 1
             end
@@ -379,7 +379,7 @@ module Kantan
             # 0001____ — Indexed with post-base index (4-bit prefix)
             idx = byte & 0x0F
             if idx == 15
-              idx, pos = read_continuation(data, pos + 1, 15, DecompressionFailed)
+              idx, pos = read_continuation(data, pos + 1, 15)
             else
               pos += 1
             end
@@ -392,7 +392,7 @@ module Kantan
             _never_index = byte & 0x08 != 0
             idx = byte & 0x07
             if idx == 7
-              idx, pos = read_continuation(data, pos + 1, 7, DecompressionFailed)
+              idx, pos = read_continuation(data, pos + 1, 7)
             else
               pos += 1
             end
@@ -413,14 +413,14 @@ module Kantan
       end
 
       def read_string data, pos
-        byte = data.getbyte(pos) || raise(DecompressionFailed, "truncated string")
+        byte = data.getbyte(pos) || raise(Truncated, "truncated string")
         huffman = byte & 0x80 != 0
         len = byte & 0x7F
         pos += 1
         if len == 127
-          len, pos = read_continuation(data, pos, 127, DecompressionFailed)
+          len, pos = read_continuation(data, pos, 127)
         end
-        raise DecompressionFailed, "truncated string data" if pos + len > data.bytesize
+        raise Truncated, "truncated string data" if pos + len > data.bytesize
 
         if huffman
           str = Huffman.decode(data, pos, len)
@@ -431,15 +431,15 @@ module Kantan
       end
 
       def read_string_with_prefix data, pos, prefix_bits, mask
-        byte = data.getbyte(pos) || raise(DecompressionFailed, "truncated string")
+        byte = data.getbyte(pos) || raise(Truncated, "truncated string")
         huffman = byte & (1 << prefix_bits) != 0
         len = byte & mask
         max = mask
         pos += 1
         if len == max
-          len, pos = read_continuation(data, pos, max, DecompressionFailed)
+          len, pos = read_continuation(data, pos, max)
         end
-        raise DecompressionFailed, "truncated string data" if pos + len > data.bytesize
+        raise Truncated, "truncated string data" if pos + len > data.bytesize
 
         if huffman
           str = Huffman.decode(data, pos, len)
@@ -449,9 +449,9 @@ module Kantan
         [str, pos + len]
       end
 
-      def read_continuation data, pos, base, error_class
+      def read_continuation data, pos, base
         remainder, pos = data.unpack("R^", offset: pos)
-        raise error_class, "truncated integer" unless remainder
+        raise Truncated, "truncated integer" unless remainder
         [base + remainder, pos]
       end
 
@@ -757,7 +757,7 @@ module Kantan
 
       def read_continuation data, pos, base
         remainder, pos = data.unpack("R^", offset: pos)
-        raise "truncated integer" unless remainder
+        raise Truncated, "truncated integer" unless remainder
         [base + remainder, pos]
       end
 
