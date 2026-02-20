@@ -258,6 +258,46 @@ module Kantan
         data = "\x02\x80\x10".b
         assert_raises(DecompressionFailed) { decoder.feed_header(4, data) }
       end
+
+      def test_feed_encoder_handles_partial_data
+        decoder = Decoder.new(4096, 100)
+
+        # Build a complete encoder instruction:
+        # set capacity 4096, then insert with static ref 0 (:authority) value "example.com"
+        full = "\x3f\xe1\x1f".b           # set capacity
+        full << "\xc0\x0bexample.com".b    # insert
+
+        # Split in the middle of the insert instruction (after the name ref byte)
+        part1 = full.byteslice(0, 4)   # capacity + first byte of insert
+        part2 = full.byteslice(4, full.bytesize - 4)  # rest of insert
+
+        # First call: processes capacity, buffers partial insert
+        decoder.feed_encoder(part1)
+
+        # Second call: completes the insert
+        decoder.feed_encoder(part2)
+
+        # Verify the entry was inserted by decoding a field section that references it
+        data = "\x02\x80\x10".b  # ERIC=2, post-base index 0
+        _, headers = decoder.feed_header(4, data)
+        assert_equal [[":authority", "example.com"]], headers
+      end
+
+      def test_feed_encoder_handles_single_byte_chunks
+        decoder = Decoder.new(4096, 100)
+
+        # Build encoder data: set capacity + insert
+        full = "\x3f\xe1\x1f".b
+        full << "\xc0\x0bexample.com".b
+
+        # Feed one byte at a time
+        full.each_byte { |b| decoder.feed_encoder([b].pack("C")) }
+
+        # Verify the entry was inserted
+        data = "\x02\x80\x10".b
+        _, headers = decoder.feed_header(4, data)
+        assert_equal [[":authority", "example.com"]], headers
+      end
     end
 
     class TestEncoder < Minitest::Test

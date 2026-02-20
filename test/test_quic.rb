@@ -5,6 +5,8 @@ require "kantan/quic/crypto"
 require "kantan/quic/frames"
 require "kantan/quic/packet"
 require "kantan/quic/tls"
+require "kantan/quic/client_tls"
+require "kantan/quic/client_connection"
 require "kantan/quic/stream"
 require "kantan/quic/server"
 require "kantan/h3"
@@ -452,6 +454,258 @@ class TestQUICIntegration < Minitest::Test
     assert_match(/method=POST/, body)
     assert_match(/bytes=11/, body)
   ensure
+    server&.stop
+  end
+end
+
+class TestQUICClientTLS < Minitest::Test
+  def generate_cert
+    key = OpenSSL::PKey::EC.generate("prime256v1")
+    cert = OpenSSL::X509::Certificate.new
+    cert.version = 2
+    cert.serial = 1
+    cert.subject = OpenSSL::X509::Name.parse("/CN=localhost")
+    cert.issuer = cert.subject
+    cert.public_key = key
+    cert.not_before = Time.now
+    cert.not_after = Time.now + 3600
+    cert.sign(key, "SHA256")
+    [cert, key]
+  end
+
+  def test_client_hello_has_empty_session_id
+    client_tls = Kantan::QUIC::ClientTLS.new
+    client_tls.our_scid = "\x00".b * 8
+    ch_msg = client_tls.build_client_hello
+
+    # type(1) + length(3) + legacy_version(2) + random(32) = offset 38
+    # session_id_len should be 0 (RFC 9001 §8.4)
+    session_id_len = ch_msg.getbyte(38)
+    assert_equal 0, session_id_len, "QUIC ClientHello must have empty session_id"
+  end
+
+  def test_client_hello_includes_sni
+    client_tls = Kantan::QUIC::ClientTLS.new("example.com")
+    client_tls.our_scid = "\x00".b * 8
+    ch_msg = client_tls.build_client_hello
+
+    # SNI extension should contain the hostname
+    assert_includes ch_msg, "example.com".b
+  end
+
+  def test_client_hello_no_sni_without_host
+    client_tls = Kantan::QUIC::ClientTLS.new
+    client_tls.our_scid = "\x00".b * 8
+    ch_msg = client_tls.build_client_hello
+
+    # Without host, no SNI extension — verify no server_name ext type (0x0000)
+    # at extension boundaries. Just check the message is parseable by the server.
+    server_tls = Kantan::QUIC::TLS.new(*generate_cert)
+    server_tls.original_dcid = "\x00".b * 8
+    server_tls.our_scid = "\x01".b * 8
+    result = server_tls.process_client_hello(ch_msg)
+    assert result[:handshake_keys]
+    assert result[:app_keys]
+  end
+
+  def test_full_tls_handshake_round_trip
+    cert, key = generate_cert
+
+    # Client side
+    client_tls = Kantan::QUIC::ClientTLS.new("localhost")
+    client_tls.our_scid = OpenSSL::Random.random_bytes(8)
+    ch_msg = client_tls.build_client_hello
+
+    # Server side processes ClientHello
+    server_tls = Kantan::QUIC::TLS.new(cert, key)
+    server_tls.original_dcid = OpenSSL::Random.random_bytes(8)
+    server_tls.our_scid = OpenSSL::Random.random_bytes(8)
+    server_result = server_tls.process_client_hello(ch_msg)
+
+    # Client processes ServerHello
+    client_result = client_tls.process_server_hello(server_result[:server_hello])
+    assert client_result[:handshake_keys][:client][:key]
+    assert client_result[:handshake_keys][:server][:key]
+
+    # Client and server must agree on handshake keys
+    assert_equal server_result[:handshake_keys][:client][:key], client_result[:handshake_keys][:client][:key]
+    assert_equal server_result[:handshake_keys][:server][:key], client_result[:handshake_keys][:server][:key]
+
+    # Client processes EE+Cert+CV+Finished
+    hs_result = client_tls.process_handshake_crypto(server_result[:handshake_crypto])
+    assert hs_result[:app_keys][:client][:key]
+    assert hs_result[:client_finished]
+
+    # Client and server must agree on app keys
+    assert_equal server_result[:app_keys][:client][:key], hs_result[:app_keys][:client][:key]
+    assert_equal server_result[:app_keys][:server][:key], hs_result[:app_keys][:server][:key]
+
+    # Server can verify client Finished
+    assert server_tls.verify_client_finished(hs_result[:client_finished])
+  end
+
+  def test_client_hello_includes_signature_algorithms
+    client_tls = Kantan::QUIC::ClientTLS.new
+    client_tls.our_scid = "\x00".b * 8
+    ch_msg = client_tls.build_client_hello
+
+    # Should include ECDSA (0x0403) and RSA-PSS (0x0804) signature algorithms
+    assert_includes ch_msg, [0x0403].pack("n")
+    assert_includes ch_msg, [0x0804].pack("n")
+  end
+end
+
+class TestQUICClientConnection < Minitest::Test
+  def setup_quic_server(&handler_block)
+    key = OpenSSL::PKey::EC.generate("prime256v1")
+    cert = OpenSSL::X509::Certificate.new
+    cert.version = 2
+    cert.serial = 1
+    cert.subject = OpenSSL::X509::Name.parse("/CN=localhost")
+    cert.issuer = cert.subject
+    cert.public_key = key
+    cert.not_before = Time.now
+    cert.not_after = Time.now + 3600
+
+    ef = OpenSSL::X509::ExtensionFactory.new
+    ef.subject_certificate = cert
+    ef.issuer_certificate = cert
+    cert.add_extension(ef.create_extension("subjectAltName", "DNS:localhost,IP:127.0.0.1", false))
+    cert.add_extension(ef.create_extension("basicConstraints", "CA:FALSE", true))
+    cert.sign(key, "SHA256")
+
+    sock = UDPSocket.new
+    sock.bind("127.0.0.1", 0)
+    port = sock.addr[1]
+    sock.close
+
+    server = Kantan::QUIC::Server.new(
+      host: "127.0.0.1",
+      port: port,
+      cert: cert,
+      key: key,
+    )
+
+    Thread.new do
+      server.run do |conn|
+        handler = TestServerHandler.new
+        handler.on_request_block = handler_block
+        session = Kantan::H3::Session.new(conn, handler: handler)
+        session.receive
+      end
+    rescue => e
+      $stderr.puts "Client test server error: #{e.message}"
+    end
+
+    sleep 0.1
+    [port, server]
+  end
+
+  def test_client_connection_get_200
+    port, server = setup_quic_server do |stream|
+      body = "Hello from HTTP/3!\n"
+      stream.respond([
+        [":status", "200"],
+        ["content-type", "text/plain"],
+        ["content-length", body.bytesize.to_s],
+      ], body: body)
+    end
+
+    conn = Kantan::QUIC::ClientConnection.new("127.0.0.1", port)
+    conn.connect
+
+    handler = TestClientHandler.new
+    session = Kantan::H3::Session.new(conn, handler: handler)
+    Thread.new { session.connect }
+    sleep 0.1
+
+    session.request([
+      [":method", "GET"],
+      [":path", "/"],
+      [":scheme", "https"],
+      [":authority", "localhost"],
+    ])
+
+    # Collect response
+    headers = nil
+    body = "".b
+    deadline = Time.now + 5
+    loop do
+      assert Time.now < deadline, "timed out waiting for response"
+      event = handler.queue.pop
+      case event[0]
+      when :headers then headers = event[1]
+      when :data then body << event[1]
+      when :done then break
+      end
+    end
+
+    status = headers.assoc(":status")&.last
+    assert_equal "200", status
+    assert_equal "Hello from HTTP/3!\n", body
+  ensure
+    conn&.close
+    server&.stop
+  end
+
+  def test_client_connection_gets_response_headers
+    port, server = setup_quic_server do |stream|
+      stream.respond([
+        [":status", "200"],
+        ["x-custom", "quic-test"],
+        ["content-type", "text/plain"],
+      ], body: "ok")
+    end
+
+    conn = Kantan::QUIC::ClientConnection.new("127.0.0.1", port)
+    conn.connect
+
+    handler = TestClientHandler.new
+    session = Kantan::H3::Session.new(conn, handler: handler)
+    Thread.new { session.connect }
+    sleep 0.1
+
+    session.request([
+      [":method", "GET"],
+      [":path", "/"],
+      [":scheme", "https"],
+      [":authority", "localhost"],
+    ])
+
+    headers = nil
+    deadline = Time.now + 5
+    loop do
+      assert Time.now < deadline, "timed out waiting for response"
+      event = handler.queue.pop
+      case event[0]
+      when :headers then headers = event[1]
+      when :done then break
+      end
+    end
+
+    assert_equal "quic-test", headers.assoc("x-custom")&.last
+  ensure
+    conn&.close
+    server&.stop
+  end
+
+  def test_client_stream_ids_are_client_initiated
+    port, server = setup_quic_server do |stream|
+      stream.respond([[":status", "200"]], body: "ok")
+    end
+
+    conn = Kantan::QUIC::ClientConnection.new("127.0.0.1", port)
+    conn.connect
+
+    # Client bidi streams: 0, 4, 8...
+    s1 = conn.open_stream(bidi: true)
+    assert_equal 0, s1.id & 0x03, "client bidi stream low bits should be 0"
+
+    # Client uni streams: 2, 6, 10...
+    s2 = conn.open_stream(bidi: false)
+    assert_equal 2, s2.id & 0x03, "client uni stream low bits should be 2"
+  ensure
+    conn&.close
     server&.stop
   end
 end

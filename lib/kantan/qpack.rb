@@ -130,69 +130,86 @@ module Kantan
         @total_inserts = 0
         @blocked = {} # stream_id => [data]
         @known_received_count = 0
+        @encoder_buf = "".b
       end
 
       # Process encoder stream data. Updates the dynamic table.
+      # Handles partial data — incomplete instructions are buffered for the next call.
       # Returns array of stream IDs that became unblocked.
       def feed_encoder data
+        if @encoder_buf.bytesize > 0
+          data = @encoder_buf + data
+          @encoder_buf = "".b
+        end
+
         pos = 0
         final = data.bytesize
 
         while pos < final
-          byte = data.getbyte(pos)
+          start_pos = pos
 
-          if byte >= 0x80
-            # 1T______ — Insert with name reference (6-bit prefix)
-            static = byte & 0x40 != 0
-            idx = byte & 0x3F
-            if idx == 63
-              idx, pos = read_continuation(data, pos + 1, 63, EncoderStreamError)
+          begin
+            byte = data.getbyte(pos)
+
+            if byte >= 0x80
+              # 1T______ — Insert with name reference (6-bit prefix)
+              static = byte & 0x40 != 0
+              idx = byte & 0x3F
+              if idx == 63
+                idx, pos = read_continuation(data, pos + 1, 63, EncoderStreamError)
+              else
+                pos += 1
+              end
+
+              if static
+                raise EncoderStreamError, "invalid static index #{idx}" if idx >= STATIC_TABLE.length
+                name = STATIC_TABLE[idx][0]
+              else
+                abs = @total_inserts - idx - 1
+                raise EncoderStreamError, "invalid dynamic index" if abs < @dropped || abs >= @total_inserts
+                name = @entries[abs - @dropped][0]
+              end
+
+              value, pos = read_string(data, pos)
+              insert(name, value)
+
+            elsif byte >= 0x40
+              # 01H_____ — Insert with literal name (5-bit prefix)
+              name, pos = read_string_with_prefix(data, pos, 5, 0x1F)
+              value, pos = read_string(data, pos)
+              insert(name, value)
+
+            elsif byte >= 0x20
+              # 001_____ — Set dynamic table capacity (5-bit prefix)
+              capacity = byte & 0x1F
+              if capacity == 31
+                capacity, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
+              else
+                pos += 1
+              end
+              raise EncoderStreamError, "capacity #{capacity} exceeds max #{@max_table_capacity}" if capacity > @max_table_capacity
+              @capacity = capacity
+              evict
+
             else
-              pos += 1
+              # 000_____ — Duplicate (5-bit prefix)
+              rel = byte & 0x1F
+              if rel == 31
+                rel, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
+              else
+                pos += 1
+              end
+              abs = @total_inserts - rel - 1
+              raise EncoderStreamError, "invalid duplicate index" if abs < @dropped || abs >= @total_inserts
+              entry = @entries[abs - @dropped]
+              insert(entry[0], entry[1])
             end
 
-            if static
-              raise EncoderStreamError, "invalid static index #{idx}" if idx >= STATIC_TABLE.length
-              name = STATIC_TABLE[idx][0]
-            else
-              abs = @total_inserts - idx - 1
-              raise EncoderStreamError, "invalid dynamic index" if abs < @dropped || abs >= @total_inserts
-              name = @entries[abs - @dropped][0]
-            end
-
-            value, pos = read_string(data, pos)
-            insert(name, value)
-
-          elsif byte >= 0x40
-            # 01H_____ — Insert with literal name (5-bit prefix)
-            name, pos = read_string_with_prefix(data, pos, 5, 0x1F)
-            value, pos = read_string(data, pos)
-            insert(name, value)
-
-          elsif byte >= 0x20
-            # 001_____ — Set dynamic table capacity (5-bit prefix)
-            capacity = byte & 0x1F
-            if capacity == 31
-              capacity, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
-            else
-              pos += 1
-            end
-            raise EncoderStreamError, "capacity #{capacity} exceeds max #{@max_table_capacity}" if capacity > @max_table_capacity
-            @capacity = capacity
-            evict
-
-          else
-            # 000_____ — Duplicate (5-bit prefix)
-            rel = byte & 0x1F
-            if rel == 31
-              rel, pos = read_continuation(data, pos + 1, 31, EncoderStreamError)
-            else
-              pos += 1
-            end
-            abs = @total_inserts - rel - 1
-            raise EncoderStreamError, "invalid duplicate index" if abs < @dropped || abs >= @total_inserts
-            entry = @entries[abs - @dropped]
-            insert(entry[0], entry[1])
+          rescue DecompressionFailed, EncoderStreamError => e
+            raise unless e.message.include?("truncated")
+            # Truncated instruction — buffer remaining data for next call
+            @encoder_buf = data.byteslice(start_pos, final - start_pos)
+            break
           end
         end
 
