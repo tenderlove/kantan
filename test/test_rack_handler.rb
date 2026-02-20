@@ -28,8 +28,8 @@ class TestRackHandler < Minitest::Test
 
     client_handler = TestClientHandler.new
 
-    server_session = Kantan::Session.new(server_io, handler: handler)
-    client_session = Kantan::Session.new(client_io, handler: client_handler)
+    server_session = Kantan::H2::Session.new(server_io, handler: handler)
+    client_session = Kantan::H2::Session.new(client_io, handler: client_handler)
 
     server_thread = Thread.new { server_session.receive }
     client_session.connect

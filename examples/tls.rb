@@ -66,7 +66,7 @@ loop do
 
   logger.info "new connection (ALPN: #{ssl_socket.alpn_protocol})"
   Thread.new(ssl_socket) do |c|
-    session = Kantan::Session.new(c, handler: MyApp.new)
+    session = Kantan::H2::Session.new(c, handler: MyApp.new)
     session.receive
     session.join
   rescue => e

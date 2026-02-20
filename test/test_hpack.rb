@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "kantan/hpack"
+require "kantan/h2/hpack"
 require "json"
 
 module Kantan
+module H2
   class TestHPACK < Minitest::Test
     BASE = File.expand_path File.join(File.dirname(__FILE__), "fixtures/hpack-test-case/nghttp2/")
     Dir.entries(BASE).map { |entry|
@@ -12,9 +13,9 @@ module Kantan
       File.join(BASE, entry)
     }.compact.sort.each { |entry|
       define_method("test_#{File.basename(entry, ".json")}") do
-        decoder = Kantan::HPACK.new
-        encoder = Kantan::HPACK.new
-        round_trip_decoder = Kantan::HPACK.new
+        decoder = Kantan::H2::HPACK.new
+        encoder = Kantan::H2::HPACK.new
+        round_trip_decoder = Kantan::H2::HPACK.new
         tests = JSON.load File.read entry
         tests["cases"].each do |x|
           headers = x["headers"].map { _1.to_a.first }
@@ -27,8 +28,8 @@ module Kantan
     }
 
     def test_hpack_encoding_decoding
-      encoder = Kantan::HPACK.new
-      decoder = Kantan::HPACK.new
+      encoder = Kantan::H2::HPACK.new
+      decoder = Kantan::H2::HPACK.new
 
       headers = [[":method", "GET"], [":path", "/"]]
       encoded = encoder.encode(headers)
@@ -39,8 +40,8 @@ module Kantan
 
     # With indexing
     def test_hpack_incremental_index
-      encoder = Kantan::HPACK.new
-      decoder = Kantan::HPACK.new
+      encoder = Kantan::H2::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       headers = [["content-language", "English"]]
       encoded = encoder.encode(headers)
 
@@ -52,8 +53,8 @@ module Kantan
 
     # With indexing twice
     def test_hpack_incremental_index_reuse
-      encoder = Kantan::HPACK.new
-      decoder = Kantan::HPACK.new
+      encoder = Kantan::H2::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       headers = [["content-language", "English"]]
       encoded = encoder.encode(headers)
 
@@ -67,7 +68,7 @@ module Kantan
     end
 
     def test_truncated_header_block_name
-      decoder = Kantan::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       # Literal header with incremental indexing, new name (0x40), then truncated
       assert_raises Kantan::Errors::CompressionError do
         decoder.decode "\x40".b
@@ -75,7 +76,7 @@ module Kantan
     end
 
     def test_truncated_header_block_value
-      decoder = Kantan::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       # Literal header with incremental indexing, indexed name (:path), then truncated before value
       assert_raises Kantan::Errors::CompressionError do
         decoder.decode "\x44".b
@@ -83,7 +84,7 @@ module Kantan
     end
 
     def test_truncated_header_block_literal_name
-      decoder = Kantan::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       # Without indexing (0x00), new name, name length 3, "foo", then truncated before value
       assert_raises Kantan::Errors::CompressionError do
         decoder.decode "\x00\x03foo".b
@@ -91,7 +92,7 @@ module Kantan
     end
 
     def test_truncated_header_block_without_indexing
-      decoder = Kantan::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       # Without indexing (0x00), new name, then truncated
       assert_raises Kantan::Errors::CompressionError do
         decoder.decode "\x00".b
@@ -99,7 +100,7 @@ module Kantan
     end
 
     def test_uppercase_huffman_header_name_rejected
-      decoder = Kantan::HPACK.new
+      decoder = Kantan::H2::HPACK.new
       upper_name = "Content-Type"
       huffed = Huffman.encode(upper_name)
       block = "\x40".b
@@ -112,8 +113,8 @@ module Kantan
     end
 
     def test_max_list_size_exceeded
-      encoder = Kantan::HPACK.new
-      decoder = Kantan::HPACK.new
+      encoder = Kantan::H2::HPACK.new
+      decoder = Kantan::H2::HPACK.new
 
       # Each header entry costs name.bytesize + value.bytesize + 32
       # ":method" (7) + "GET" (3) + 32 = 42
@@ -128,8 +129,9 @@ module Kantan
       end
 
       # Limit at or above total size should succeed
-      decoder2 = Kantan::HPACK.new
+      decoder2 = Kantan::H2::HPACK.new
       assert_equal headers, decoder2.decode(encoded, max_list_size: 80)
     end
   end
+end
 end

@@ -54,7 +54,7 @@ unless ssl.alpn_protocol == "h2"
 end
 
 handler = ResponseHandler.new
-session = Kantan::Session.new(ssl, handler: handler)
+session = Kantan::H2::Session.new(ssl, handler: handler)
 session.connect
 
 stream_id = session.request([

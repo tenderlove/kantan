@@ -24,7 +24,7 @@ while true
     c = Socket.for_fd(c_fd)
     c.autoclose = true
     c.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-    session = Kantan::Session.new(c, handler: MyApp.new)
+    session = Kantan::H2::Session.new(c, handler: MyApp.new)
     session.receive
     session.join
   end

@@ -37,7 +37,7 @@ while true
 
   logger.debug "new connection"
   Thread.new(client) do |c|
-    session = Kantan::Session.new(c, handler: MyApp.new)
+    session = Kantan::H2::Session.new(c, handler: MyApp.new)
     session.receive
   end
 end

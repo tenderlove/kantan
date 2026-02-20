@@ -60,7 +60,7 @@ Vernier.profile(out: "time_profile.json") do
 
   logger.info "new connection (ALPN: #{client.alpn_protocol})"
   Thread.new(client) do |c|
-    session = Kantan::Session.new(c, handler: handler)
+    session = Kantan::H2::Session.new(c, handler: handler)
     session.receive
     session.join
   rescue => e
