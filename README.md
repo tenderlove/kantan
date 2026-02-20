@@ -1,6 +1,6 @@
-# Kantan - Pure Ruby HTTP/2 Implementation
+# Kantan - Pure Ruby HTTP/2 and HTTP/3 (QUIC) Implementation
 
-HTTP/2 server and client implementation in pure Ruby.
+An HTTP/2 and HTTP/3 server and client implementation in pure Ruby.
 
 Passes [`h2spec`](https://github.com/summerwind/h2spec) and [`hpack-test-case`](https://github.com/http2jp/hpack-test-case).
 
@@ -8,7 +8,9 @@ Only works with Ruby 4.1.0+
 
 ## Client
 
-See `examples/fetch_google.rb`
+An example using HTTP/2 is here: `examples/fetch_google.rb`
+
+An example using HTTP/3 is here: `examples/quic_fetch.rb`
 
 ## Server
 
