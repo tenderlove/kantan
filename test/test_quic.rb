@@ -6,6 +6,9 @@ require "kantan/quic/frames"
 require "kantan/quic/packet"
 require "kantan/quic/tls"
 require "kantan/quic/stream"
+require "kantan/quic/server"
+require "kantan/h3"
+require "openssl"
 
 class TestQUICCrypto < Minitest::Test
   # RFC 9001 Appendix A test vectors
@@ -302,5 +305,153 @@ class TestQUICStream < Minitest::Test
     stream = Kantan::QUIC::Stream.new(0, nil)
     stream.receive_data("".b, 0, true)
     assert_nil stream.read(10)
+  end
+end
+
+class TestQUICIntegration < Minitest::Test
+  CURL = "/opt/homebrew/opt/curl/bin/curl"
+
+  def setup
+    unless File.executable?(CURL)
+      skip "curl not found at #{CURL}"
+    end
+    unless `#{CURL} --version 2>&1`.include?("HTTP3")
+      skip "curl does not support HTTP/3"
+    end
+  end
+
+  def setup_quic_server(&handler_block)
+    # Generate self-signed EC cert
+    key = OpenSSL::PKey::EC.generate("prime256v1")
+    cert = OpenSSL::X509::Certificate.new
+    cert.version = 2
+    cert.serial = 1
+    cert.subject = OpenSSL::X509::Name.parse("/CN=localhost")
+    cert.issuer = cert.subject
+    cert.public_key = key
+    cert.not_before = Time.now
+    cert.not_after = Time.now + 3600
+
+    ef = OpenSSL::X509::ExtensionFactory.new
+    ef.subject_certificate = cert
+    ef.issuer_certificate = cert
+    cert.add_extension(ef.create_extension("subjectAltName", "DNS:localhost,IP:127.0.0.1", false))
+    cert.add_extension(ef.create_extension("basicConstraints", "CA:FALSE", true))
+    cert.sign(key, "SHA256")
+
+    # Find a free UDP port
+    sock = UDPSocket.new
+    sock.bind("127.0.0.1", 0)
+    port = sock.addr[1]
+    sock.close
+
+    server = Kantan::QUIC::Server.new(
+      host: "127.0.0.1",
+      port: port,
+      cert: cert,
+      key: key,
+    )
+
+    server_thread = Thread.new do
+      server.run do |conn|
+        handler = TestServerHandler.new
+        handler.on_request_block = handler_block
+        session = Kantan::H3::Session.new(conn, handler: handler)
+        session.receive
+      end
+    rescue => e
+      $stderr.puts "Integration test server error: #{e.message}"
+    end
+
+    sleep 0.1 # let server bind
+
+    [port, server, server_thread]
+  end
+
+  def run_curl(port, path, extra_args: [])
+    sep = "---CURL_STATUS---"
+    args = [CURL, "--http3", "-k", "-s", "-w", "\n#{sep}%{http_code}",
+            *extra_args,
+            "https://127.0.0.1:#{port}#{path}"]
+    output = IO.popen(args, err: "/dev/null", &:read)
+    body, status_str = output.split(sep, 2)
+    [status_str.to_i, body.rstrip]
+  end
+
+  def test_curl_get_200
+    port, server, _ = setup_quic_server do |stream|
+      body = "Hello from HTTP/3!\n"
+      stream.respond([
+        [":status", "200"],
+        ["content-type", "text/plain"],
+        ["content-length", body.bytesize.to_s],
+      ], body: body)
+    end
+
+    status, body = run_curl(port, "/")
+    assert_equal 200, status
+    assert_equal "Hello from HTTP/3!", body
+  ensure
+    server&.stop
+  end
+
+  def test_curl_get_404
+    port, server, _ = setup_quic_server do |stream|
+      path = stream.headers.assoc(":path")&.last
+      if path == "/"
+        stream.respond([[":status", "200"]], body: "ok")
+      else
+        body = "Not Found\n"
+        stream.respond([
+          [":status", "404"],
+          ["content-type", "text/plain"],
+          ["content-length", body.bytesize.to_s],
+        ], body: body)
+      end
+    end
+
+    status, body = run_curl(port, "/nonexistent")
+    assert_equal 404, status
+    assert_equal "Not Found", body
+  ensure
+    server&.stop
+  end
+
+  def test_curl_response_headers
+    port, server, _ = setup_quic_server do |stream|
+      stream.respond([
+        [":status", "200"],
+        ["content-type", "application/json"],
+        ["x-custom", "test-value"],
+      ], body: "{}")
+    end
+
+    args = [CURL, "--http3", "-k", "-s", "-D", "-",
+            "https://127.0.0.1:#{port}/"]
+    output = IO.popen(args, err: "/dev/null", &:read)
+    assert_match(/content-type: application\/json/i, output)
+    assert_match(/x-custom: test-value/i, output)
+  ensure
+    server&.stop
+  end
+
+  def test_curl_post_with_body
+    port, server, _ = setup_quic_server do |stream|
+      method = stream.headers.assoc(":method")&.last
+      received = stream.data_received
+      body = "method=#{method} bytes=#{received}\n"
+      stream.respond([
+        [":status", "200"],
+        ["content-type", "text/plain"],
+        ["content-length", body.bytesize.to_s],
+      ], body: body)
+    end
+
+    status, body = run_curl(port, "/echo", extra_args: ["-X", "POST", "-d", "hello world"])
+    assert_equal 200, status
+    assert_match(/method=POST/, body)
+    assert_match(/bytes=11/, body)
+  ensure
+    server&.stop
   end
 end
