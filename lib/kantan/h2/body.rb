@@ -4,12 +4,12 @@ module Kantan
   module H2
     module Body
       class Buffer
-        def initialize(string)
+        def initialize string
           @string = string
           @offset = 0
         end
 
-        def read(n)
+        def read n
           chunk = @string.byteslice(@offset, n)
           @offset += n
           chunk
@@ -28,12 +28,12 @@ module Kantan
       end
 
       class File
-        def initialize(path)
+        def initialize path
           @io = ::File.open(path, "rb")
           @remaining = @io.size
         end
 
-        def read(n)
+        def read n
           chunk = @io.read(n)
           @remaining -= chunk.bytesize
           chunk
