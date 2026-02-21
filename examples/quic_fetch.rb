@@ -9,7 +9,7 @@
 
 require "kantan"
 require "kantan/h3"
-require "kantan/quic/client_connection"
+require "kantan/quic/openssl_connection"
 
 class ResponseHandler < Kantan::Handler
   def initialize
@@ -46,7 +46,7 @@ end
 host = ARGV[0] || "localhost"
 port = (ARGV[1] || 4433).to_i
 
-conn = Kantan::QUIC::ClientConnection.new(host, port)
+conn = Kantan::QUIC::OpenSSLConnection.new(host, port)
 conn.connect
 
 handler = ResponseHandler.new
