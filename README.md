@@ -30,10 +30,9 @@ class MyApp < Kantan::Handler
 end
 
 server = TCPServer.new "127.0.0.1", 8888
-port = server.addr[1]
 
 logger = Logger.new $stderr
-logger.debug "port #{port}"
+logger.debug "port #{8888}"
 
 while true
   client_fd = server.sysaccept

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require "kantan/h2/hpack"
+require "kantan"
 require "json"
 
 module Kantan

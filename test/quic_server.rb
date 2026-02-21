@@ -4,11 +4,10 @@
 #   /opt/homebrew/opt/curl/bin/curl --http3 -k -v https://localhost:4433/
 #
 # Usage:
-#   fish -c 'chruby ruby-master; ruby -I../openssl/lib -Ilib test/quic_server.rb'
+#   fish -c 'chruby ruby-master; bundle exec ruby -Ilib test/quic_server.rb'
 
 require "kantan"
-require "kantan/h3"
-require "kantan/quic/openssl_server"
+require "kantan/h3/poll_session"
 require "openssl"
 
 # ── Generate self-signed cert ────────────────────────────────────────
@@ -64,17 +63,43 @@ end
 
 # ── Start server ─────────────────────────────────────────────────────
 
-server = Kantan::QUIC::OpenSSLServer.new(
-  host: "0.0.0.0",
-  port: 4433,
-  cert: cert,
-  key: key,
-)
+udp = UDPSocket.new
+udp.bind("0.0.0.0", 4433)
 
-trap("INT") { server.stop; exit }
+ctx = OpenSSL::SSL::SSLContext.new(quic: :server)
+ctx.cert = cert
+ctx.key = key
+ctx.alpn_select_cb = -> (protos) { protos.include?("h3") ? "h3" : protos.first }
 
-server.run do |conn|
+listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
+listener.blocking_mode = false
+listener.listen
+
+$stderr.puts "Listening on https://0.0.0.0:4433"
+
+trap("INT") { exit }
+
+loop do
+  # Wait for a UDP packet to arrive (or a QUIC timer to fire)
+  udp.wait_readable(listener.event_timeout)
+
+  # Process the QUIC handshake — the listener reads incoming packets
+  # and drives the handshake to completion over multiple round trips.
+  listener.handle_events
+
+  # Check if a connection is now ready (handshake complete)
+  r = OpenSSL::SSL::SSLSocket.poll(
+    [[listener, OpenSSL::SSL::POLL_EVENT_IC]],
+    0, OpenSSL::SSL::POLL_FLAG_NO_HANDLE_EVENTS
+  )
+  next if r.empty?
+
+  # Handshake done — accept the connection
+  conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
+  next unless conn
+
+  # PollSession takes over: conn.handle_events drives I/O from here
   handler = MyHandler.new
-  session = Kantan::H3::Session.new(conn, handler: handler)
-  session.receive
+  session = Kantan::H3::PollSession.new(conn, io: udp, handler: handler)
+  session.run
 end

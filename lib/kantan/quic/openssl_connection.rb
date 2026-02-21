@@ -8,7 +8,7 @@ module Kantan
     class OpenSSLStream
       attr_reader :id
 
-      def initialize(ssl, delay_read: 0)
+      def initialize ssl, delay_read: 0
         @ssl = ssl
         @id = ssl.stream_id
 
@@ -20,7 +20,7 @@ module Kantan
         @delay_read = delay_read
       end
 
-      def on_readable=(cb)
+      def on_readable= cb
         @on_readable = cb
         @reader ||= Thread.new { reader_loop }
       end

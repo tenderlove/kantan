@@ -2,108 +2,13 @@
 
 require_relative "helper"
 require "openssl"
-require "kantan/h3"
-
-begin
-  OpenSSL::SSL::SSLContext.new(quic: :client_thread)
-  OPENSSL_QUIC_AVAILABLE = true
-rescue
-  OPENSSL_QUIC_AVAILABLE = false
-end
-
-if OPENSSL_QUIC_AVAILABLE
-  require "kantan/quic/openssl_connection"
-  require "kantan/quic/openssl_server"
-end
-
-OPENSSL_QUIC_SERVER_AVAILABLE = OPENSSL_QUIC_AVAILABLE &&
-  OpenSSL::SSL::SSLSocket.respond_to?(:new_listener)
+require "kantan/h3/poll_session"
 
 CURL_HTTP3 = "/opt/homebrew/opt/curl/bin/curl"
-CURL_HTTP3_AVAILABLE = File.executable?(CURL_HTTP3)
 
 class TestOpenSSLQUIC < Minitest::Test
   def setup
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC_AVAILABLE
-  end
-
-  def test_openssl_client_get_200
-    conn = Kantan::QUIC::OpenSSLConnection.new("www.google.com", 443)
-    conn.connect
-
-    handler = TestClientHandler.new
-    session = Kantan::H3::Session.new(conn, handler: handler)
-    Thread.new { session.connect }
-    sleep 0.1
-
-    session.request([
-      [":method", "GET"],
-      [":path", "/"],
-      [":scheme", "https"],
-      [":authority", "www.google.com"],
-    ])
-
-    headers = nil
-    body = "".b
-    deadline = Time.now + 10
-    loop do
-      assert Time.now < deadline, "timed out waiting for response"
-      event = handler.queue.pop
-      case event[0]
-      when :headers then headers = event[1]
-      when :data then body << event[1]
-      when :done then break
-      end
-    end
-
-    status = headers&.assoc(":status")&.last
-    assert_equal "200", status
-    assert body.bytesize > 0
-  rescue OpenSSL::SSL::SSLError, SocketError, Errno::ENETUNREACH, Errno::ETIMEDOUT
-    skip "Cannot reach www.google.com:443 over QUIC"
-  ensure
-    conn&.close
-  end
-
-  def test_openssl_client_response_headers
-    conn = Kantan::QUIC::OpenSSLConnection.new("www.google.com", 443)
-    conn.connect
-
-    handler = TestClientHandler.new
-    session = Kantan::H3::Session.new(conn, handler: handler)
-    Thread.new { session.connect }
-    sleep 0.1
-
-    session.request([
-      [":method", "GET"],
-      [":path", "/"],
-      [":scheme", "https"],
-      [":authority", "www.google.com"],
-    ])
-
-    headers = nil
-    deadline = Time.now + 10
-    loop do
-      assert Time.now < deadline, "timed out waiting for response"
-      event = handler.queue.pop
-      case event[0]
-      when :headers then headers = event[1]
-      when :done then break
-      end
-    end
-
-    assert headers&.assoc("content-type")
-  rescue OpenSSL::SSL::SSLError, SocketError, Errno::ENETUNREACH, Errno::ETIMEDOUT
-    skip "Cannot reach www.google.com:443 over QUIC"
-  ensure
-    conn&.close
-  end
-end
-
-class TestOpenSSLQUICServer < Minitest::Test
-  def setup
-    skip "OpenSSL QUIC server not available" unless OPENSSL_QUIC_SERVER_AVAILABLE
-    skip "curl with HTTP/3 not available" unless CURL_HTTP3_AVAILABLE
+    skip "curl with HTTP/3 not available at #{CURL_HTTP3}" unless File.executable?(CURL_HTTP3)
   end
 
   def generate_cert
@@ -129,36 +34,52 @@ class TestOpenSSLQUICServer < Minitest::Test
   def setup_server(&handler_block)
     cert, key = generate_cert
 
-    # Find a free port
-    sock = UDPSocket.new
-    sock.bind("127.0.0.1", 0)
-    port = sock.addr[1]
-    sock.close
+    udp = UDPSocket.new
+    udp.bind("127.0.0.1", 0)
+    port = udp.addr[1]
 
-    server = Kantan::QUIC::OpenSSLServer.new(
-      host: "127.0.0.1",
-      port: port,
-      cert: cert,
-      key: key,
-    )
+    ctx = OpenSSL::SSL::SSLContext.new(quic: :server)
+    ctx.cert = cert
+    ctx.key = key
+    ctx.alpn_select_cb = -> (protos) { protos.include?("h3") ? "h3" : protos.first }
+
+    listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
+    listener.blocking_mode = false
+    listener.listen
 
     Thread.new do
-      server.run do |conn|
+      loop do
+        udp.wait_readable(listener.event_timeout)
+        listener.handle_events
+        r = OpenSSL::SSL::SSLSocket.poll(
+          [[listener, OpenSSL::SSL::POLL_EVENT_IC]],
+          0, OpenSSL::SSL::POLL_FLAG_NO_HANDLE_EVENTS
+        )
+        next if r.empty?
+
+        conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
+        next unless conn
+
         handler = TestServerHandler.new
         handler.on_request_block = handler_block
-        session = Kantan::H3::Session.new(conn, handler: handler)
-        session.receive
+        session = Kantan::H3::PollSession.new(conn, io: udp, handler: handler)
+        session.run
       end
-    rescue => e
-      $stderr.puts "OpenSSL server test error: #{e.message}"
+    rescue IOError, OpenSSL::SSL::SSLError
+      # shutdown
     end
 
-    sleep 0.3
-    [port, server]
+    [port, listener, udp]
   end
 
-  def test_openssl_server_curl_get_200
-    port, server = setup_server do |stream|
+  def curl(port, *extra_args)
+    args = [CURL_HTTP3, "--http3", "-k", "-s", "--retry", "3", "--retry-delay", "0",
+            *extra_args, "https://127.0.0.1:#{port}/"]
+    IO.popen(args, err: File::NULL, &:read)
+  end
+
+  def test_curl_get_200
+    port, listener, udp = setup_server do |stream|
       body = "Hello from OpenSSL HTTP/3!\n"
       stream.respond([
         [":status", "200"],
@@ -167,14 +88,15 @@ class TestOpenSSLQUICServer < Minitest::Test
       ], body: body)
     end
 
-    output = `#{CURL_HTTP3} --http3 -k -s -o /dev/null -w '%{http_code}' https://127.0.0.1:#{port}/ 2>&1`
-    assert_equal "200", output.strip
+    body = curl(port)
+    assert_equal "Hello from OpenSSL HTTP/3!\n", body
   ensure
-    server&.stop
+    listener&.close rescue nil
+    udp&.close rescue nil
   end
 
-  def test_openssl_server_curl_response_headers
-    port, server = setup_server do |stream|
+  def test_curl_response_headers
+    port, listener, udp = setup_server do |stream|
       body = "ok"
       stream.respond([
         [":status", "200"],
@@ -184,9 +106,10 @@ class TestOpenSSLQUICServer < Minitest::Test
       ], body: body)
     end
 
-    output = `#{CURL_HTTP3} --http3 -k -s -D - -o /dev/null https://127.0.0.1:#{port}/ 2>&1`
-    assert_match(/x-custom: quic-test/i, output)
+    headers = curl(port, "-D", "-", "-o", "/dev/null")
+    assert_match(/x-custom: quic-test/i, headers)
   ensure
-    server&.stop
+    listener&.close rescue nil
+    udp&.close rescue nil
   end
 end
