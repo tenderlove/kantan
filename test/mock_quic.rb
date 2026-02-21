@@ -7,7 +7,7 @@ module MockQuic
     attr_reader :id
     attr_accessor :on_readable, :peer
 
-    def initialize(id)
+    def initialize id
       @id = id
       @recv_buf = "".b
       @recv_mu = Mutex.new
@@ -18,7 +18,7 @@ module MockQuic
     end
 
     # Called by the peer's write/close to deliver data.
-    def receive_data(data, fin)
+    def receive_data data, fin
       @recv_mu.synchronize do
         @recv_buf << data
         @recv_fin = true if fin
@@ -37,7 +37,7 @@ module MockQuic
       end
     end
 
-    def read(n)
+    def read n
       @recv_mu.synchronize do
         loop do
           return @recv_buf.slice!(0, n) if @recv_buf.bytesize >= n
@@ -57,7 +57,7 @@ module MockQuic
       end
     end
 
-    def readpartial(n)
+    def readpartial n
       @recv_mu.synchronize do
         loop do
           if @recv_buf.bytesize > 0
@@ -70,7 +70,7 @@ module MockQuic
       end
     end
 
-    def write(data)
+    def write data
       @peer&.receive_data(data.b, false)
       data.bytesize
     end
@@ -90,7 +90,7 @@ module MockQuic
   end
 
   class Connection
-    def initialize(is_server, peer = nil)
+    def initialize is_server, peer = nil
       @is_server = is_server
       @peer = peer
       @accept_queue = Thread::Queue.new
@@ -145,7 +145,7 @@ module MockQuic
       end
     end
 
-    def enqueue_stream(stream)
+    def enqueue_stream stream
       @accept_queue << stream
     end
 

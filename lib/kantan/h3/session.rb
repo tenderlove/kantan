@@ -231,7 +231,7 @@ module Kantan
 
       # ── Stream registration ────────────────────────────────────────
 
-      def register_stream(qs)
+      def register_stream qs
         stream_id = qs.id
         @quic_streams[stream_id] = qs
 
@@ -263,7 +263,7 @@ module Kantan
 
       # ── Event dispatch ─────────────────────────────────────────────
 
-      def process_data(stream_id)
+      def process_data stream_id
         state = @readers[stream_id]
         return unless state
         return if state[:done]
@@ -285,7 +285,7 @@ module Kantan
 
       # ── Unidirectional stream classification ───────────────────────
 
-      def classify_uni(state, stream_id, data, fin)
+      def classify_uni state, stream_id, data, fin
         state[:buf] << data
 
         result = Varint.safe_decode(state[:buf], 0)
@@ -316,7 +316,7 @@ module Kantan
 
       # ── QPACK encoder stream ───────────────────────────────────────
 
-      def process_qpack_encoder(data)
+      def process_qpack_encoder data
         return if data.empty?
         unblocked = @decoder.feed_encoder(data)
         unblocked.each { |sid| retry_blocked_stream(sid) }
@@ -324,14 +324,14 @@ module Kantan
 
       # ── QPACK decoder stream ───────────────────────────────────────
 
-      def process_qpack_decoder(data)
+      def process_qpack_decoder data
         return if data.empty?
         @encoder_mu.synchronize { @encoder.feed_decoder(data) }
       end
 
       # ── Control stream ─────────────────────────────────────────────
 
-      def process_control(state, data, fin)
+      def process_control state, data, fin
         state[:reader].feed(data) if data.bytesize > 0
         while (frame = state[:reader].next_frame)
           type, payload = frame
@@ -346,7 +346,7 @@ module Kantan
 
       # ── Bidirectional stream ───────────────────────────────────────
 
-      def process_bidi(state, data, fin)
+      def process_bidi state, data, fin
         return if state[:done]
 
         state[:reader].feed(data) if data.bytesize > 0
@@ -355,7 +355,7 @@ module Kantan
         drain_bidi_frames(state)
       end
 
-      def drain_bidi_frames(state)
+      def drain_bidi_frames state
         return if state[:blocked] || state[:done]
 
         stream = state[:stream]
@@ -390,13 +390,13 @@ module Kantan
 
       # ── QPACK header decoding ──────────────────────────────────────
 
-      def try_decode_headers(stream_id, payload)
+      def try_decode_headers stream_id, payload
         @decoder.feed_header(stream_id, payload)
       rescue QPACK::StreamBlocked
         nil
       end
 
-      def retry_blocked_stream(stream_id)
+      def retry_blocked_stream stream_id
         state = @readers[stream_id]
         return unless state && state[:blocked]
 

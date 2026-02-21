@@ -26,14 +26,14 @@ module Kantan
       QPACK_BLOCKED_STREAMS   = 0x07
 
       # Write a frame (type varint + length varint + payload) into +out+.
-      def self.write(out, type, payload)
+      def self.write out, type, payload
         Varint.encode(out, type)
         Varint.encode(out, payload.bytesize)
         out << payload
       end
 
       # Encode a settings hash ({id => value}) into a SETTINGS payload.
-      def self.encode_settings(hash)
+      def self.encode_settings hash
         out = "".b
         hash.each do |id, value|
           Varint.encode(out, id)
@@ -49,7 +49,7 @@ module Kantan
           @buf = "".b
         end
 
-        def feed(data)
+        def feed data
           @buf << data
         end
 
@@ -79,7 +79,7 @@ module Kantan
       end
 
       # Decode a SETTINGS payload into a hash.
-      def self.decode_settings(payload)
+      def self.decode_settings payload
         settings = {}
         pos = 0
         while pos < payload.bytesize

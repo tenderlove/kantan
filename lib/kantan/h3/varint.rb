@@ -4,7 +4,7 @@ module Kantan
   module H3
     module Varint
       # Encode a QUIC variable-length integer (RFC 9000 §16) into +out+.
-      def self.encode(out, value)
+      def self.encode out, value
         if value < 0x40
           out << value
         elsif value < 0x4000
@@ -17,7 +17,7 @@ module Kantan
       end
 
       # Decode a varint from a buffer at +pos+, returning nil if insufficient data.
-      def self.safe_decode(buf, pos = 0)
+      def self.safe_decode buf, pos = 0
         return nil if pos >= buf.bytesize
         first = buf.getbyte(pos)
         prefix = first >> 6
@@ -52,7 +52,7 @@ module Kantan
       end
 
       # Decode a varint from a buffer at +pos+.  Returns [value, new_pos].
-      def self.decode(buf, pos = 0)
+      def self.decode buf, pos = 0
         first = buf.getbyte(pos)
         prefix = first >> 6
         value = first & 0x3F
