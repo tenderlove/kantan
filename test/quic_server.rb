@@ -4,11 +4,11 @@
 #   /opt/homebrew/opt/curl/bin/curl --http3 -k -v https://localhost:4433/
 #
 # Usage:
-#   fish -c 'chruby ruby-master; ruby -Ilib test/quic_server.rb'
+#   fish -c 'chruby ruby-master; ruby -I../openssl/lib -Ilib test/quic_server.rb'
 
 require "kantan"
 require "kantan/h3"
-require "kantan/quic/server"
+require "kantan/quic/openssl_server"
 require "openssl"
 
 # ── Generate self-signed cert ────────────────────────────────────────
@@ -64,7 +64,7 @@ end
 
 # ── Start server ─────────────────────────────────────────────────────
 
-server = Kantan::QUIC::Server.new(
+server = Kantan::QUIC::OpenSSLServer.new(
   host: "0.0.0.0",
   port: 4433,
   cert: cert,
