@@ -143,42 +143,38 @@ module Kantan
 
         # server_name (SNI)
         if @host
-          host_bytes = @host.b
-          name_entry = "\x00".b + [host_bytes.bytesize].pack("n") + host_bytes
-          sni_data = [name_entry.bytesize].pack("n") + name_entry
-          exts << [EXT_SERVER_NAME].pack("n") << [sni_data.bytesize].pack("n") << sni_data
+          host = @host.b
+          write_ext exts, EXT_SERVER_NAME,
+            [3 + host.bytesize, 0, host.bytesize].pack("nCn") << host
         end
 
         # supported_versions: TLS 1.3 only
-        sv_data = "\x02\x03\x04".b  # 1-byte list len (2) + version 0x0304
-        exts << [EXT_SUPPORTED_VERSIONS].pack("n") << [sv_data.bytesize].pack("n") << sv_data
+        write_ext exts, EXT_SUPPORTED_VERSIONS, [2, 0x0304].pack("Cn")
 
         # supported_groups: X25519
-        groups_list = [X25519].pack("n")
-        groups_data = [groups_list.bytesize].pack("n") + groups_list
-        exts << [EXT_SUPPORTED_GROUPS].pack("n") << [groups_data.bytesize].pack("n") << groups_data
+        write_ext exts, EXT_SUPPORTED_GROUPS, [2, X25519].pack("nn")
 
         # signature_algorithms: ECDSA P-256 + RSA-PSS SHA-256/384/512
-        sig_algs = [0x0403, 0x0804, 0x0805, 0x0806].pack("n*")
-        sig_data = [sig_algs.bytesize].pack("n") + sig_algs
-        exts << [EXT_SIGNATURE_ALGORITHMS].pack("n") << [sig_data.bytesize].pack("n") << sig_data
+        write_ext exts, EXT_SIGNATURE_ALGORITHMS,
+          [8, 0x0403, 0x0804, 0x0805, 0x0806].pack("n5")
 
         # key_share: X25519
-        pub_raw = @ecdh.raw_public_key
-        ks_entry = [X25519].pack("n") + [pub_raw.bytesize].pack("n") + pub_raw
-        ks_data = [ks_entry.bytesize].pack("n") + ks_entry
-        exts << [EXT_KEY_SHARE].pack("n") << [ks_data.bytesize].pack("n") << ks_data
+        pub = @ecdh.raw_public_key
+        write_ext exts, EXT_KEY_SHARE,
+          [4 + pub.bytesize, X25519, pub.bytesize].pack("nnn") << pub
 
         # ALPN: h3
-        alpn_proto = "\x02h3".b
-        alpn_list = [alpn_proto.bytesize].pack("n") + alpn_proto
-        exts << [EXT_ALPN].pack("n") << [alpn_list.bytesize].pack("n") << alpn_list
+        write_ext exts, EXT_ALPN, [3, 2].pack("nC") << "h3".b
 
         # QUIC transport parameters
-        tp = build_transport_params
-        exts << [EXT_QUIC_TRANSPORT_PARAMS].pack("n") << [tp.bytesize].pack("n") << tp
+        write_ext exts, EXT_QUIC_TRANSPORT_PARAMS, build_transport_params
 
         exts
+      end
+
+      def write_ext buf, type, data
+        [type, data.bytesize].pack("nn", buffer: buf)
+        buf << data
       end
 
       def build_transport_params

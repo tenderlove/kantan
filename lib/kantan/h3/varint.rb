@@ -8,78 +8,31 @@ module Kantan
         if value < 0x40
           out << value
         elsif value < 0x4000
-          out << [0x4000 | value].pack("n")
+          [0x4000 | value].pack("n", buffer: out)
         elsif value < 0x40000000
-          out << [0x80000000 | value].pack("N")
+          [0x80000000 | value].pack("N", buffer: out)
         else
-          out << [0xC000000000000000 | value].pack("Q>")
+          [0xC000000000000000 | value].pack("Q>", buffer: out)
         end
       end
 
       # Decode a varint from a buffer at +pos+, returning nil if insufficient data.
       def self.safe_decode buf, pos = 0
         return nil if pos >= buf.bytesize
-        first = buf.getbyte(pos)
-        prefix = first >> 6
-        value = first & 0x3F
+        len = 1 << (buf.getbyte(pos) >> 6) # 1, 2, 4, or 8
+        return nil if buf.bytesize < pos + len
 
-        case prefix
-        when 0
-          [value, pos + 1]
-        when 1
-          return nil if pos + 1 >= buf.bytesize
-          value = (value << 8) | buf.getbyte(pos + 1)
-          [value, pos + 2]
-        when 2
-          return nil if pos + 3 >= buf.bytesize
-          value = (value << 24) |
-            (buf.getbyte(pos + 1) << 16) |
-            (buf.getbyte(pos + 2) << 8) |
-            buf.getbyte(pos + 3)
-          [value, pos + 4]
-        when 3
-          return nil if pos + 7 >= buf.bytesize
-          value = (value << 56) |
-            (buf.getbyte(pos + 1) << 48) |
-            (buf.getbyte(pos + 2) << 40) |
-            (buf.getbyte(pos + 3) << 32) |
-            (buf.getbyte(pos + 4) << 24) |
-            (buf.getbyte(pos + 5) << 16) |
-            (buf.getbyte(pos + 6) << 8) |
-            buf.getbyte(pos + 7)
-          [value, pos + 8]
+        case len
+        when 1 then [buf.getbyte(pos) & 0x3F, pos + 1]
+        when 2 then [buf.unpack1("n", offset: pos) & 0x3FFF, pos + 2]
+        when 4 then [buf.unpack1("N", offset: pos) & 0x3FFFFFFF, pos + 4]
+        when 8 then [buf.unpack1("Q>", offset: pos) & 0x3FFFFFFFFFFFFFFF, pos + 8]
         end
       end
 
       # Decode a varint from a buffer at +pos+.  Returns [value, new_pos].
       def self.decode buf, pos = 0
-        first = buf.getbyte(pos)
-        prefix = first >> 6
-        value = first & 0x3F
-
-        case prefix
-        when 0
-          [value, pos + 1]
-        when 1
-          value = (value << 8) | buf.getbyte(pos + 1)
-          [value, pos + 2]
-        when 2
-          value = (value << 24) |
-            (buf.getbyte(pos + 1) << 16) |
-            (buf.getbyte(pos + 2) << 8) |
-            buf.getbyte(pos + 3)
-          [value, pos + 4]
-        when 3
-          value = (value << 56) |
-            (buf.getbyte(pos + 1) << 48) |
-            (buf.getbyte(pos + 2) << 40) |
-            (buf.getbyte(pos + 3) << 32) |
-            (buf.getbyte(pos + 4) << 24) |
-            (buf.getbyte(pos + 5) << 16) |
-            (buf.getbyte(pos + 6) << 8) |
-            buf.getbyte(pos + 7)
-          [value, pos + 8]
-        end
+        safe_decode buf, pos
       end
     end
   end
