@@ -15,7 +15,7 @@ module Kantan
       ESTABLISHED = :established
       CLOSED      = :closed
 
-      def initialize(host, port)
+      def initialize host, port
         @socket = UDPSocket.new
         @socket.connect(host, port)
 
@@ -93,7 +93,7 @@ module Kantan
         @accept_queue.pop
       end
 
-      def open_stream(bidi:)
+      def open_stream bidi:
         @stream_mu.synchronize do
           if bidi
             id = @next_bidi_id
@@ -116,7 +116,7 @@ module Kantan
         @socket.close rescue nil
       end
 
-      def notify_stream_data(stream)
+      def notify_stream_data stream
         @write_signal << stream.id rescue nil
       end
 
@@ -139,7 +139,7 @@ module Kantan
         end
       end
 
-      def receive_datagram(data)
+      def receive_datagram data
         pos = 0
         while pos < data.bytesize
           first_byte = data.getbyte(pos)
@@ -156,7 +156,7 @@ module Kantan
         $stderr.puts "QUIC client: decryption failed: #{e.message}" if $DEBUG
       end
 
-      def process_long_header(data, offset)
+      def process_long_header data, offset
         info = Packet.parse_long_header(data, offset)
         packet_end = info[:header_end]
 
@@ -170,7 +170,7 @@ module Kantan
         packet_end
       end
 
-      def process_initial(data, offset, info)
+      def process_initial data, offset, info
         decrypted_info, plaintext = Packet.decrypt_long(data, @initial_keys[:server], offset)
 
         @server_scid ||= info[:scid]
@@ -201,7 +201,7 @@ module Kantan
         @state = HANDSHAKE
       end
 
-      def process_handshake(data, offset, info)
+      def process_handshake data, offset, info
         return unless @handshake_keys
 
         decrypted_info, plaintext = Packet.decrypt_long(data, @handshake_keys[:server], offset)
@@ -258,7 +258,7 @@ module Kantan
         end
       end
 
-      def process_short_header(data, offset)
+      def process_short_header data, offset
         return unless @app_keys
 
         _info, plaintext = Packet.decrypt_short(
@@ -287,7 +287,7 @@ module Kantan
 
       # ── Stream delivery ────────────────────────────────────────────────
 
-      def deliver_stream_data(stream_id, offset, data, fin)
+      def deliver_stream_data stream_id, offset, data, fin
         stream = @stream_mu.synchronize do
           @streams[stream_id] ||= begin
             s = Stream.new(stream_id, self)
@@ -300,12 +300,12 @@ module Kantan
 
       # ── CRYPTO reassembly ──────────────────────────────────────────────
 
-      def append_crypto(level, offset, data)
+      def append_crypto level, offset, data
         @crypto_fragments[level] << [offset, data]
         reassemble_crypto(level)
       end
 
-      def reassemble_crypto(level)
+      def reassemble_crypto level
         frags = @crypto_fragments[level]
         frags.sort_by! { |o, _| o }
 
@@ -352,7 +352,7 @@ module Kantan
 
       # ── Sending ────────────────────────────────────────────────────────
 
-      def send_initial_ack(server_pn)
+      def send_initial_ack server_pn
         @send_mu.synchronize do
           frames = [Frames.build_ack(server_pn)]
           pkt = Packet.build_initial(
@@ -368,7 +368,7 @@ module Kantan
         end
       end
 
-      def send_handshake_ack(server_pn)
+      def send_handshake_ack server_pn
         @send_mu.synchronize do
           return unless @handshake_keys
           frames = [Frames.build_ack(server_pn)]
@@ -384,7 +384,7 @@ module Kantan
         end
       end
 
-      def send_ack_1rtt(pn)
+      def send_ack_1rtt pn
         @send_mu.synchronize do
           frames = [Frames.build_ack(pn)]
           pkt = Packet.build_short(
@@ -398,7 +398,7 @@ module Kantan
         end
       end
 
-      def flush_stream(stream_id)
+      def flush_stream stream_id
         return unless @app_keys
 
         stream = @stream_mu.synchronize { @streams[stream_id] }

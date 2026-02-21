@@ -6,7 +6,7 @@ require "kantan/quic/connection"
 module Kantan
   module QUIC
     class Server
-      def initialize(host:, port:, cert:, key:)
+      def initialize host:, port:, cert:, key:
         @host = host
         @port = port
         @cert = cert
@@ -15,7 +15,7 @@ module Kantan
         @running = false
       end
 
-      def run(&handler_block)
+      def run &handler_block
         @socket = UDPSocket.new
         @socket.bind(@host, @port)
         @running = true

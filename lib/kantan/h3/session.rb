@@ -10,7 +10,7 @@ module Kantan
       QPACK_TABLE_CAPACITY = 4096
       QPACK_BLOCKED        = 100
 
-      def initialize(conn, handler:)
+      def initialize conn, handler:
         @conn = conn
         @handler = handler
 
@@ -51,7 +51,7 @@ module Kantan
       end
 
       # Initiate a client request.  Returns stream_id.
-      def request(headers, body: nil)
+      def request headers, body: nil
         qs = @conn.open_stream(bidi: true)
         stream_id = qs.id
         @quic_streams[stream_id] = qs
@@ -67,16 +67,16 @@ module Kantan
         stream_id
       end
 
-      def send_headers(stream_id, headers, has_body: false)
+      def send_headers stream_id, headers, has_body: false
         @write_queue << [:headers, stream_id, headers, !has_body]
       end
 
-      def send_body(stream_id, body)
+      def send_body stream_id, body
         body = body.b if body.encoding != Encoding::BINARY
         @write_queue << [:data, stream_id, body, true]
       end
 
-      def send_file(stream_id, path)
+      def send_file stream_id, path
         @write_queue << [:sendfile, stream_id, path]
       end
 
@@ -221,7 +221,7 @@ module Kantan
 
       # ── Request stream handling (server: peer-initiated bidi) ────────
 
-      def handle_request_stream(qs)
+      def handle_request_stream qs
         stream_id = qs.id
         @quic_streams[stream_id] = qs
         stream = Stream.new(stream_id, nil, 0, self, :open, nil, false, nil, false)
@@ -234,7 +234,7 @@ module Kantan
 
       # ── Response stream handling (client: self-initiated bidi) ───────
 
-      def handle_response_stream(qs, stream)
+      def handle_response_stream qs, stream
         read_stream_frames(qs, stream)
       rescue IOError, EOFError
         # Stream closed
@@ -242,7 +242,7 @@ module Kantan
 
       # ── Shared frame reading for bidi streams ────────────────────────
 
-      def read_stream_frames(qs, stream)
+      def read_stream_frames qs, stream
         stream_id = stream.id
 
         while (frame = Frames.read(qs))
@@ -269,7 +269,7 @@ module Kantan
       end
 
       # Decode headers, waiting if the stream is blocked on QPACK dynamic table.
-      def decode_headers(stream_id, payload)
+      def decode_headers stream_id, payload
         @decoder_mu.synchronize do
           @decoder.feed_header(stream_id, payload)
         end
@@ -289,7 +289,7 @@ module Kantan
 
       # ── Unidirectional stream handling ────────────────────────────────
 
-      def handle_uni_stream(qs)
+      def handle_uni_stream qs
         stream_type = Varint.read(qs)
 
         case stream_type
@@ -304,7 +304,7 @@ module Kantan
         # Stream closed
       end
 
-      def handle_control_stream(qs)
+      def handle_control_stream qs
         frame = Frames.read(qs)
         return unless frame
         type, payload = frame
@@ -317,7 +317,7 @@ module Kantan
         end
       end
 
-      def handle_qpack_encoder_stream(qs)
+      def handle_qpack_encoder_stream qs
         loop do
           data = qs.readpartial(4096)
           unblocked = @decoder_mu.synchronize { @decoder.feed_encoder(data) }
@@ -327,7 +327,7 @@ module Kantan
         # Stream closed
       end
 
-      def handle_qpack_decoder_stream(qs)
+      def handle_qpack_decoder_stream qs
         loop do
           data = qs.readpartial(4096)
           @encoder_mu.synchronize { @encoder.feed_decoder(data) }

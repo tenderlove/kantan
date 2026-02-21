@@ -20,7 +20,7 @@ module Kantan
 
       X25519 = 0x001d
 
-      def initialize(host = nil)
+      def initialize host = nil
         @host = host
         @ecdh = OpenSSL::PKey.generate_key("X25519")
       end
@@ -45,7 +45,7 @@ module Kantan
 
       # Process ServerHello. +sh_msg+ is the full handshake message (type+length+body).
       # Returns { handshake_keys: { client:, server: } }.
-      def process_server_hello(sh_msg)
+      def process_server_hello sh_msg
         data = sh_msg.byteslice(4, sh_msg.bytesize - 4)
         server_pub_raw = parse_server_hello(data)
 
@@ -78,7 +78,7 @@ module Kantan
 
       # Process concatenated EE+Cert+CV+Finished from Handshake CRYPTO.
       # Returns { app_keys: { client:, server: }, client_finished: bytes }.
-      def process_handshake_crypto(data)
+      def process_handshake_crypto data
         ee_msg, cert_msg, cv_msg, finished_msg, server_cert, cv_body, finished_body =
           parse_handshake_messages(data)
 
@@ -120,18 +120,18 @@ module Kantan
 
       private
 
-      def derive_secret(secret, label, transcript_hash)
+      def derive_secret secret, label, transcript_hash
         Crypto.hkdf_expand_label(secret, label, transcript_hash, 32)
       end
 
-      def tls_handshake_message(type, body)
+      def tls_handshake_message type, body
         msg = "".b
         msg << type
         msg << [body.bytesize].pack("N").byteslice(1, 3)
         msg << body
       end
 
-      def build_finished(hs_secret, transcript_hash)
+      def build_finished hs_secret, transcript_hash
         finished_key = Crypto.hkdf_expand_label(hs_secret, "finished", "", 32)
         OpenSSL::HMAC.digest("SHA256", finished_key, transcript_hash)
       end
@@ -195,13 +195,13 @@ module Kantan
         buf
       end
 
-      def add_transport_param(buf, id, value)
+      def add_transport_param buf, id, value
         Varint.encode(buf, id)
         Varint.encode(buf, value.bytesize)
         buf << value
       end
 
-      def add_transport_param_varint(buf, id, value)
+      def add_transport_param_varint buf, id, value
         val_buf = "".b
         Varint.encode(val_buf, value)
         add_transport_param(buf, id, val_buf)
@@ -209,7 +209,7 @@ module Kantan
 
       # ── Parsing ─────────────────────────────────────────────────────────
 
-      def parse_server_hello(data)
+      def parse_server_hello data
         pos = 0
         pos += 2   # legacy_version
         pos += 32  # server random
@@ -236,7 +236,7 @@ module Kantan
         server_pub_raw
       end
 
-      def parse_handshake_messages(data)
+      def parse_handshake_messages data
         pos = 0
         ee_msg = cert_msg = cv_msg = finished_msg = nil
         server_cert = nil
@@ -260,7 +260,7 @@ module Kantan
         [ee_msg, cert_msg, cv_msg, finished_msg, server_cert, cv_body, finished_body]
       end
 
-      def parse_certificate(body)
+      def parse_certificate body
         pos = 0
         ctx_len = body.getbyte(pos); pos += 1
         pos += ctx_len if ctx_len > 0
@@ -272,7 +272,7 @@ module Kantan
 
       # ── Verification ───────────────────────────────────────────────────
 
-      def verify_certificate_verify(body, cert, transcript_hash)
+      def verify_certificate_verify body, cert, transcript_hash
         pos = 0
         sig_scheme = body.byteslice(pos, 2).unpack1("n"); pos += 2
         sig_len = body.byteslice(pos, 2).unpack1("n"); pos += 2
@@ -296,7 +296,7 @@ module Kantan
         raise "TLS CertificateVerify failed" unless ok
       end
 
-      def verify_finished(hs_secret, verify_data, transcript_hash)
+      def verify_finished hs_secret, verify_data, transcript_hash
         finished_key = Crypto.hkdf_expand_label(hs_secret, "finished", "", 32)
         expected = OpenSSL::HMAC.digest("SHA256", finished_key, transcript_hash)
         unless verify_data == expected

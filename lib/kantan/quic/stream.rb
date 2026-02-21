@@ -5,7 +5,7 @@ module Kantan
     class Stream
       attr_reader :id
 
-      def initialize(id, connection)
+      def initialize id, connection
         @id = id
         @connection = connection
 
@@ -22,7 +22,7 @@ module Kantan
       end
 
       # Read exactly n bytes. Blocks until n bytes available or EOF.
-      def read(n)
+      def read n
         @recv_mu.synchronize do
           loop do
             if @recv_buf.bytesize >= n
@@ -50,7 +50,7 @@ module Kantan
       end
 
       # Read up to n bytes. Blocks until at least 1 byte available.
-      def readpartial(n)
+      def readpartial n
         @recv_mu.synchronize do
           loop do
             if @recv_buf.bytesize > 0
@@ -64,7 +64,7 @@ module Kantan
       end
 
       # Enqueue data for sending. Connection will flush.
-      def write(data)
+      def write data
         @send_mu.synchronize do
           raise IOError, "stream closed" if @send_fin
           @send_buf << data.b
@@ -89,7 +89,7 @@ module Kantan
       end
 
       # Called by connection when STREAM frame data arrives.
-      def receive_data(data, offset, fin)
+      def receive_data data, offset, fin
         @recv_mu.synchronize do
           # Simple: assume in-order delivery for now
           @recv_buf << data

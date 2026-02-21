@@ -21,7 +21,7 @@ module Kantan
       # X25519 group ID
       X25519 = 0x001d
 
-      def initialize(cert, key)
+      def initialize cert, key
         @cert = cert
         @key = key
         @server_ecdh = OpenSSL::PKey.generate_key("X25519")
@@ -29,7 +29,7 @@ module Kantan
 
       # Parse a raw ClientHello message (without the record/handshake header).
       # +data+ is the body after type(1)+length(3).
-      def parse_client_hello(data)
+      def parse_client_hello data
         pos = 0
         _legacy_version = data.byteslice(pos, 2).unpack1("n"); pos += 2
         random = data.byteslice(pos, 32); pos += 32
@@ -71,7 +71,7 @@ module Kantan
       #   handshake_crypto:  raw bytes for EE+Cert+CV+Finished (in Handshake CRYPTO)
       #   handshake_keys:    { server: {key,iv,hp}, client: {key,iv,hp} }
       #   app_keys:          { server: {key,iv,hp}, client: {key,iv,hp} }
-      def process_client_hello(ch_data)
+      def process_client_hello ch_data
         # Parse the ClientHello body (skip type + 3-byte length)
         ch = parse_client_hello(ch_data.byteslice(4, ch_data.bytesize - 4))
 
@@ -159,7 +159,7 @@ module Kantan
 
       # Verify the client's Finished message.
       # +data+ is the raw Finished handshake message (type + length + verify_data).
-      def verify_client_finished(data)
+      def verify_client_finished data
         verify_data = data.byteslice(4, data.bytesize - 4)
         finished_key = Crypto.hkdf_expand_label(@client_hs_secret, "finished", "", 32)
         transcript_hash = OpenSSL::Digest::SHA256.digest(@expected_transcript)
@@ -169,18 +169,18 @@ module Kantan
 
       private
 
-      def derive_secret(secret, label, transcript_hash)
+      def derive_secret secret, label, transcript_hash
         Crypto.hkdf_expand_label(secret, label, transcript_hash, 32)
       end
 
-      def tls_handshake_message(type, body)
+      def tls_handshake_message type, body
         msg = "".b
         msg << type
         msg << [body.bytesize].pack("N").byteslice(1, 3) # 3-byte length
         msg << body
       end
 
-      def build_server_hello(session_id)
+      def build_server_hello session_id
         body = "".b
         body << [0x0303].pack("n") # legacy version TLS 1.2
         body << OpenSSL::Random.random_bytes(32) # server random
@@ -204,7 +204,7 @@ module Kantan
         body
       end
 
-      def build_encrypted_extensions(ch_body)
+      def build_encrypted_extensions ch_body
         exts = "".b
 
         # ALPN: h3
@@ -244,13 +244,13 @@ module Kantan
         buf
       end
 
-      def add_transport_param(buf, id, value)
+      def add_transport_param buf, id, value
         Varint.encode(buf, id)
         Varint.encode(buf, value.bytesize)
         buf << value
       end
 
-      def add_transport_param_varint(buf, id, value)
+      def add_transport_param_varint buf, id, value
         val_buf = "".b
         Varint.encode(val_buf, value)
         add_transport_param(buf, id, val_buf)
@@ -269,7 +269,7 @@ module Kantan
         body
       end
 
-      def build_certificate_verify(transcript_hash)
+      def build_certificate_verify transcript_hash
         # Signature input: 64 spaces + context string + 0x00 + transcript hash
         sig_input = (" " * 64).b + "TLS 1.3, server CertificateVerify\x00".b + transcript_hash
 
@@ -281,12 +281,12 @@ module Kantan
         body
       end
 
-      def build_finished(hs_secret, transcript_hash)
+      def build_finished hs_secret, transcript_hash
         finished_key = Crypto.hkdf_expand_label(hs_secret, "finished", "", 32)
         OpenSSL::HMAC.digest("SHA256", finished_key, transcript_hash)
       end
 
-      def parse_key_share(data, result)
+      def parse_key_share data, result
         pos = 0
         total_len = data.byteslice(pos, 2).unpack1("n"); pos += 2
         end_pos = pos + total_len
@@ -300,7 +300,7 @@ module Kantan
         end
       end
 
-      def parse_alpn(data, result)
+      def parse_alpn data, result
         pos = 0
         list_len = data.byteslice(pos, 2).unpack1("n"); pos += 2
         end_pos = pos + list_len

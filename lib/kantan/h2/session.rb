@@ -118,7 +118,7 @@ module Kantan
         start_read_thread
       end
 
-      def receive(preface_verified: false)
+      def receive preface_verified: false
         @server_mode = true
         unless preface_verified
           preface = @io.read CONNECTION_PREFACE.bytesize
