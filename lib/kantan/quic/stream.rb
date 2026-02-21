@@ -4,6 +4,7 @@ module Kantan
   module QUIC
     class Stream
       attr_reader :id
+      attr_accessor :on_readable
 
       def initialize id, connection
         @id = id
@@ -95,6 +96,17 @@ module Kantan
           @recv_buf << data
           @recv_fin = true if fin
           @recv_cv.broadcast
+        end
+        @on_readable&.call
+      end
+
+      # Non-blocking drain. Returns [data, fin] or nil if nothing available.
+      def drain
+        @recv_mu.synchronize do
+          return nil if @recv_buf.empty? && !@recv_fin
+          data = @recv_buf.dup
+          @recv_buf.clear
+          [data, @recv_fin]
         end
       end
 

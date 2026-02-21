@@ -25,14 +25,48 @@ module Kantan
         case prefix
         when 0 then value
         when 1
-          value = (value << 8) | io.readbyte
-          value
+          (value << 8) | io.readbyte
         when 2
           rest = io.read(3)
           (value << 24) | (rest.getbyte(0) << 16) | (rest.getbyte(1) << 8) | rest.getbyte(2)
         when 3
           rest = io.read(7)
           (value << 56) | ("\0".b << rest).unpack1("Q>")
+        end
+      end
+
+      # Decode a varint from a buffer at +pos+, returning nil if insufficient data.
+      def self.safe_decode(buf, pos = 0)
+        return nil if pos >= buf.bytesize
+        first = buf.getbyte(pos)
+        prefix = first >> 6
+        value = first & 0x3F
+
+        case prefix
+        when 0
+          [value, pos + 1]
+        when 1
+          return nil if pos + 1 >= buf.bytesize
+          value = (value << 8) | buf.getbyte(pos + 1)
+          [value, pos + 2]
+        when 2
+          return nil if pos + 3 >= buf.bytesize
+          value = (value << 24) |
+            (buf.getbyte(pos + 1) << 16) |
+            (buf.getbyte(pos + 2) << 8) |
+            buf.getbyte(pos + 3)
+          [value, pos + 4]
+        when 3
+          return nil if pos + 7 >= buf.bytesize
+          value = (value << 56) |
+            (buf.getbyte(pos + 1) << 48) |
+            (buf.getbyte(pos + 2) << 40) |
+            (buf.getbyte(pos + 3) << 32) |
+            (buf.getbyte(pos + 4) << 24) |
+            (buf.getbyte(pos + 5) << 16) |
+            (buf.getbyte(pos + 6) << 8) |
+            buf.getbyte(pos + 7)
+          [value, pos + 8]
         end
       end
 

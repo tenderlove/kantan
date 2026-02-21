@@ -17,14 +17,13 @@ module Kantan
         @encoder = QPACK::Encoder.new(0)  # static table only until encoder stream ordering is reliable
         @decoder = QPACK::Decoder.new(QPACK_TABLE_CAPACITY, QPACK_BLOCKED)
         @encoder_mu = Mutex.new
-        @decoder_mu = Mutex.new
-        @decoder_cv = ConditionVariable.new
 
         @streams = {}        # stream_id => Kantan::Stream
         @quic_streams = {}   # stream_id => QuicStream
+        @readers = {}        # stream_id => per-stream state hash
 
         @write_queue = Thread::Queue.new
-        @threads = []
+        @events = Thread::Queue.new
 
         @our_encoder_stream = nil
         @our_decoder_stream = nil
@@ -34,20 +33,22 @@ module Kantan
         @closed = false
       end
 
-      # Server entry point: open control/QPACK streams, then accept.
+      # Server entry point: open control/QPACK streams, then run event loop.
       def receive
         @server_mode = true
         open_outgoing_streams
         start_write_thread
-        accept_loop
+        start_accept_fwd
+        event_loop
       end
 
-      # Client entry point: open control/QPACK streams, then accept.
+      # Client entry point: open control/QPACK streams, then run event loop.
       def connect
         @server_mode = false
         open_outgoing_streams
         start_write_thread
-        accept_loop
+        start_accept_fwd
+        event_loop
       end
 
       # Initiate a client request.  Returns stream_id.
@@ -58,9 +59,7 @@ module Kantan
         stream = Stream.new(stream_id, nil, 0, self, :idle, nil, false, nil, false)
         @streams[stream_id] = stream
 
-        # Spawn a reader thread for the response on this bidi stream
-        t = Thread.new(qs, stream) { |q, s| handle_response_stream(q, s) }
-        @threads << t
+        register_stream(qs)
 
         send_headers(stream_id, headers, has_body: !!body)
         send_body(stream_id, body) if body
@@ -82,13 +81,14 @@ module Kantan
 
       def finish
         @write_queue << [:shutdown]
+        @events << [:shutdown]
         join
       end
 
       def join
         @writer&.join
-        @accept_thread&.join
-        @threads.each { _1.join rescue nil }
+        @event_thread&.join if @event_thread != Thread.current
+        @accept_fwd&.join
       end
 
       private
@@ -120,7 +120,7 @@ module Kantan
         @our_decoder_stream.write(dec_buf)
       end
 
-      # ── Write thread ──────────────────────────────────────────────────
+      # ── Write thread (unchanged) ────────────────────────────────────
 
       def start_write_thread
         @writer = Thread.new { write_loop }
@@ -195,65 +195,183 @@ module Kantan
         @conn.close rescue nil
       end
 
-      # ── Accept loop (read thread) ────────────────────────────────────
+      # ── Accept-forwarding thread ───────────────────────────────────
 
-      def accept_loop
-        @accept_thread = Thread.current
-        while (qs = @conn.accept_stream)
-          if qs.id & 0x02 == 0
-            # Bidirectional stream → request
-            t = Thread.new(qs) { |s| handle_request_stream(s) }
-            @threads << t
-          else
-            # Unidirectional stream → control / QPACK
-            t = Thread.new(qs) { |s| handle_uni_stream(s) }
-            @threads << t
+      def start_accept_fwd
+        @accept_fwd = Thread.new do
+          while (qs = @conn.accept_stream)
+            @events << [:new_stream, qs]
+          end
+        rescue IOError, Errno::EPIPE
+          # Connection closed
+        ensure
+          @events << [:shutdown]
+        end
+      end
+
+      # ── Event loop ─────────────────────────────────────────────────
+
+      def event_loop
+        @event_thread = Thread.current
+
+        while (event = @events.pop)
+          case event[0]
+          when :new_stream then register_stream(event[1])
+          when :data       then process_data(event[1])
+          when :shutdown   then break
           end
         end
       rescue IOError, Errno::EPIPE
-        # Connection closed
+        # Connection error
       ensure
         @closed = true
         @write_queue << [:shutdown]
-        @decoder_cv.broadcast  # wake any threads blocked on QPACK
         @handler.on_close
       end
 
-      # ── Request stream handling (server: peer-initiated bidi) ────────
+      # ── Stream registration ────────────────────────────────────────
 
-      def handle_request_stream qs
+      def register_stream(qs)
         stream_id = qs.id
         @quic_streams[stream_id] = qs
-        stream = Stream.new(stream_id, nil, 0, self, :open, nil, false, nil, false)
-        @streams[stream_id] = stream
 
-        read_stream_frames(qs, stream)
-      rescue IOError, EOFError
-        # Stream closed
+        if stream_id & 0x02 == 0
+          # Bidirectional stream
+          unless @streams[stream_id]
+            stream = Stream.new(stream_id, nil, 0, self, :open, nil, false, nil, false)
+            @streams[stream_id] = stream
+          end
+          @readers[stream_id] = {
+            type: :bidi,
+            reader: Frames::FrameReader.new,
+            stream: @streams[stream_id],
+            fin: false,
+            done: false,
+            blocked: false,
+          }
+        else
+          # Unidirectional stream — type not yet known
+          @readers[stream_id] = {
+            type: :unknown_uni,
+            buf: "".b,
+          }
+        end
+
+        qs.on_readable = -> { @events << [:data, stream_id] }
+        @events << [:data, stream_id]  # drain any data already buffered
       end
 
-      # ── Response stream handling (client: self-initiated bidi) ───────
+      # ── Event dispatch ─────────────────────────────────────────────
 
-      def handle_response_stream qs, stream
-        read_stream_frames(qs, stream)
-      rescue IOError, EOFError
-        # Stream closed
+      def process_data(stream_id)
+        state = @readers[stream_id]
+        return unless state
+        return if state[:done]
+
+        qs = @quic_streams[stream_id]
+        result = qs.drain
+        return unless result
+
+        data, fin = result
+
+        case state[:type]
+        when :unknown_uni  then classify_uni(state, stream_id, data, fin)
+        when :qpack_encoder then process_qpack_encoder(data)
+        when :qpack_decoder then process_qpack_decoder(data)
+        when :control       then process_control(state, data, fin)
+        when :bidi          then process_bidi(state, data, fin)
+        end
       end
 
-      # ── Shared frame reading for bidi streams ────────────────────────
+      # ── Unidirectional stream classification ───────────────────────
 
-      def read_stream_frames qs, stream
-        stream_id = stream.id
+      def classify_uni(state, stream_id, data, fin)
+        state[:buf] << data
 
-        while (frame = Frames.read(qs))
+        result = Varint.safe_decode(state[:buf], 0)
+        return unless result
+
+        stream_type, pos = result
+        remaining = pos < state[:buf].bytesize ? state[:buf].byteslice(pos, state[:buf].bytesize - pos) : "".b
+
+        case stream_type
+        when Frames::CONTROL
+          state[:type] = :control
+          state[:reader] = Frames::FrameReader.new
+          state.delete(:buf)
+          process_control(state, remaining, fin) if remaining.bytesize > 0 || fin
+        when Frames::QPACK_ENCODER
+          state[:type] = :qpack_encoder
+          state.delete(:buf)
+          process_qpack_encoder(remaining) if remaining.bytesize > 0
+        when Frames::QPACK_DECODER
+          state[:type] = :qpack_decoder
+          state.delete(:buf)
+          process_qpack_decoder(remaining) if remaining.bytesize > 0
+        else
+          # Unknown uni stream type — ignore
+          state.delete(:buf)
+        end
+      end
+
+      # ── QPACK encoder stream ───────────────────────────────────────
+
+      def process_qpack_encoder(data)
+        return if data.empty?
+        unblocked = @decoder.feed_encoder(data)
+        unblocked.each { |sid| retry_blocked_stream(sid) }
+      end
+
+      # ── QPACK decoder stream ───────────────────────────────────────
+
+      def process_qpack_decoder(data)
+        return if data.empty?
+        @encoder_mu.synchronize { @encoder.feed_decoder(data) }
+      end
+
+      # ── Control stream ─────────────────────────────────────────────
+
+      def process_control(state, data, fin)
+        state[:reader].feed(data) if data.bytesize > 0
+        while (frame = state[:reader].next_frame)
+          type, payload = frame
+          case type
+          when Frames::SETTINGS
+            _settings = Frames.decode_settings(payload)
+          when Frames::GOAWAY
+            # Handle GOAWAY
+          end
+        end
+      end
+
+      # ── Bidirectional stream ───────────────────────────────────────
+
+      def process_bidi(state, data, fin)
+        return if state[:done]
+
+        state[:reader].feed(data) if data.bytesize > 0
+        state[:fin] = true if fin
+
+        drain_bidi_frames(state)
+      end
+
+      def drain_bidi_frames(state)
+        return if state[:blocked] || state[:done]
+
+        stream = state[:stream]
+
+        while (frame = state[:reader].next_frame)
           type, payload = frame
 
           case type
           when Frames::HEADERS
-            decoder_data, headers = decode_headers(stream_id, payload)
-            if decoder_data.bytesize > 0
-              @our_decoder_stream.write(decoder_data)
+            result = try_decode_headers(stream.id, payload)
+            unless result
+              state[:blocked] = true
+              return
             end
+            decoder_data, headers = result
+            @our_decoder_stream.write(decoder_data) if decoder_data.bytesize > 0
             stream.headers = headers
             @handler.on_headers(stream)
 
@@ -263,77 +381,35 @@ module Kantan
           end
         end
 
-        # QUIC FIN received — stream complete
-        stream.half_close_remote!
-        @handler.on_request(stream)
+        if state[:fin] && !state[:done]
+          state[:done] = true
+          stream.half_close_remote!
+          @handler.on_request(stream)
+        end
       end
 
-      # Decode headers, waiting if the stream is blocked on QPACK dynamic table.
-      def decode_headers stream_id, payload
-        @decoder_mu.synchronize do
-          @decoder.feed_header(stream_id, payload)
-        end
+      # ── QPACK header decoding ──────────────────────────────────────
+
+      def try_decode_headers(stream_id, payload)
+        @decoder.feed_header(stream_id, payload)
       rescue QPACK::StreamBlocked
-        # Wait for encoder stream data to unblock us
-        @decoder_mu.synchronize do
-          loop do
-            raise IOError, "connection closed" if @closed
-            begin
-              return @decoder.resume_header(stream_id)
-            rescue QPACK::DecompressionFailed
-              @decoder_cv.wait(@decoder_mu)
-            end
-          end
-        end
+        nil
       end
 
-      # ── Unidirectional stream handling ────────────────────────────────
+      def retry_blocked_stream(stream_id)
+        state = @readers[stream_id]
+        return unless state && state[:blocked]
 
-      def handle_uni_stream qs
-        stream_type = Varint.read(qs)
-
-        case stream_type
-        when Frames::CONTROL
-          handle_control_stream(qs)
-        when Frames::QPACK_ENCODER
-          handle_qpack_encoder_stream(qs)
-        when Frames::QPACK_DECODER
-          handle_qpack_decoder_stream(qs)
+        begin
+          decoder_data, headers = @decoder.resume_header(stream_id)
+          @our_decoder_stream.write(decoder_data) if decoder_data.bytesize > 0
+          state[:stream].headers = headers
+          state[:blocked] = false
+          @handler.on_headers(state[:stream])
+          drain_bidi_frames(state)
+        rescue QPACK::StreamBlocked, QPACK::DecompressionFailed
+          # Still blocked
         end
-      rescue IOError, EOFError
-        # Stream closed
-      end
-
-      def handle_control_stream qs
-        frame = Frames.read(qs)
-        return unless frame
-        type, payload = frame
-        return unless type == Frames::SETTINGS
-
-        _settings = Frames.decode_settings(payload)
-
-        while (frame = Frames.read(qs))
-          # GOAWAY, etc. — first pass just ignores
-        end
-      end
-
-      def handle_qpack_encoder_stream qs
-        loop do
-          data = qs.readpartial(4096)
-          unblocked = @decoder_mu.synchronize { @decoder.feed_encoder(data) }
-          @decoder_cv.broadcast if unblocked.any?
-        end
-      rescue EOFError
-        # Stream closed
-      end
-
-      def handle_qpack_decoder_stream qs
-        loop do
-          data = qs.readpartial(4096)
-          @encoder_mu.synchronize { @encoder.feed_decoder(data) }
-        end
-      rescue EOFError
-        # Stream closed
       end
     end
   end

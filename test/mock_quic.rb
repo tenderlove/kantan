@@ -1,43 +1,91 @@
 # frozen_string_literal: true
 
 # In-process mock QUIC transport for testing HTTP/3 without a real QUIC stack.
-# Each stream is backed by a pair of IO.pipe.  A connection has an accept queue;
-# open_stream creates pipe pairs and hands one end to the peer's accept queue.
+# Streams use buffer+mutex (matching Kantan::QUIC::Stream API) instead of IO pipes.
 module MockQuic
   class Stream
     attr_reader :id
+    attr_accessor :on_readable, :peer
 
-    def initialize(id, reader, writer)
+    def initialize(id)
       @id = id
-      @reader = reader
-      @writer = writer
+      @recv_buf = "".b
+      @recv_mu = Mutex.new
+      @recv_cv = ConditionVariable.new
+      @recv_fin = false
       @closed = false
+      @peer = nil
+    end
+
+    # Called by the peer's write/close to deliver data.
+    def receive_data(data, fin)
+      @recv_mu.synchronize do
+        @recv_buf << data
+        @recv_fin = true if fin
+        @recv_cv.broadcast
+      end
+      @on_readable&.call
+    end
+
+    # Non-blocking drain. Returns [data, fin] or nil if nothing available.
+    def drain
+      @recv_mu.synchronize do
+        return nil if @recv_buf.empty? && !@recv_fin
+        data = @recv_buf.dup
+        @recv_buf.clear
+        [data, @recv_fin]
+      end
     end
 
     def read(n)
-      @reader.read(n)
+      @recv_mu.synchronize do
+        loop do
+          return @recv_buf.slice!(0, n) if @recv_buf.bytesize >= n
+          return @recv_buf.bytesize > 0 ? @recv_buf.slice!(0, @recv_buf.bytesize) : nil if @recv_fin
+          @recv_cv.wait(@recv_mu)
+        end
+      end
     end
 
     def readbyte
-      @reader.readbyte
+      @recv_mu.synchronize do
+        loop do
+          return @recv_buf.slice!(0, 1).getbyte(0) if @recv_buf.bytesize > 0
+          raise EOFError, "end of stream" if @recv_fin
+          @recv_cv.wait(@recv_mu)
+        end
+      end
     end
 
     def readpartial(n)
-      @reader.readpartial(n)
+      @recv_mu.synchronize do
+        loop do
+          if @recv_buf.bytesize > 0
+            len = [n, @recv_buf.bytesize].min
+            return @recv_buf.slice!(0, len)
+          end
+          raise EOFError, "end of stream" if @recv_fin
+          @recv_cv.wait(@recv_mu)
+        end
+      end
     end
 
     def write(data)
-      @writer.write(data)
+      @peer&.receive_data(data.b, false)
+      data.bytesize
     end
 
     def close
       return if @closed
       @closed = true
-      @writer.close rescue nil
+      @peer&.receive_data("".b, true)
     end
 
     def close_read
-      @reader.close rescue nil
+      @recv_mu.synchronize do
+        @recv_fin = true
+        @recv_cv.broadcast
+      end
     end
   end
 
@@ -47,7 +95,7 @@ module MockQuic
       @peer = peer
       @accept_queue = Thread::Queue.new
       @mu = Mutex.new
-      @all_ios = []  # all pipe IOs for cleanup
+      @streams = []
 
       # Stream ID counters (QUIC stream ID assignment)
       # Client bidi: 0, 4, 8...   Server bidi: 1, 5, 9...
@@ -84,16 +132,12 @@ module MockQuic
           @next_uni_id += 4
         end
 
-        local_r, peer_w = IO.pipe   # data flows: peer_w → local_r
-        peer_r, local_w = IO.pipe   # data flows: local_w → peer_r
+        local_stream = Stream.new(id)
+        peer_stream = Stream.new(id)
+        local_stream.peer = peer_stream
+        peer_stream.peer = local_stream
 
-        local_r.binmode; peer_w.binmode
-        peer_r.binmode; local_w.binmode
-
-        @all_ios.push(local_r, peer_w, peer_r, local_w)
-
-        local_stream = Stream.new(id, peer_r, peer_w)
-        peer_stream  = Stream.new(id, local_r, local_w)
+        @streams << local_stream << peer_stream
 
         @peer.enqueue_stream(peer_stream) if @peer
 
@@ -106,14 +150,16 @@ module MockQuic
     end
 
     def close
+      streams_to_close = nil
       do_close_peer = false
       @mu.synchronize do
         return if @closed
         @closed = true
         do_close_peer = true
+        streams_to_close = @streams.dup
         @accept_queue.close
-        @all_ios.each { _1.close rescue nil }
       end
+      streams_to_close&.each { |s| s.close_read rescue nil }
       @peer&.close if do_close_peer
     end
   end

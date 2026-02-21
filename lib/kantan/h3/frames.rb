@@ -52,6 +52,42 @@ module Kantan
         out
       end
 
+      # Non-blocking buffered frame parser. Accumulates bytes via feed,
+      # returns complete frames via next_frame.
+      class FrameReader
+        def initialize
+          @buf = "".b
+        end
+
+        def feed(data)
+          @buf << data
+        end
+
+        # Returns [type, payload] or nil if incomplete.
+        def next_frame
+          return nil if @buf.empty?
+
+          result = Varint.safe_decode(@buf, 0)
+          return nil unless result
+          type, pos = result
+
+          result = Varint.safe_decode(@buf, pos)
+          return nil unless result
+          length, pos = result
+
+          return nil if @buf.bytesize < pos + length
+
+          payload = @buf.byteslice(pos, length)
+          rest = pos + length
+          @buf = rest < @buf.bytesize ? @buf.byteslice(rest, @buf.bytesize - rest) : "".b
+          [type, payload]
+        end
+
+        def buffered?
+          @buf.bytesize > 0
+        end
+      end
+
       # Decode a SETTINGS payload into a hash.
       def self.decode_settings(payload)
         settings = {}
