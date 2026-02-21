@@ -32,16 +32,6 @@ module Kantan
         out << payload
       end
 
-      # Read a frame from +io+.  Returns [type, payload] or nil at EOF.
-      def self.read(io)
-        type = Varint.read(io)
-        length = Varint.read(io)
-        payload = length > 0 ? io.read(length) : "".b
-        [type, payload]
-      rescue EOFError
-        nil
-      end
-
       # Encode a settings hash ({id => value}) into a SETTINGS payload.
       def self.encode_settings(hash)
         out = "".b

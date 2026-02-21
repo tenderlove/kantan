@@ -61,40 +61,49 @@ class TestH3 < Minitest::Test
     end
   end
 
-  def test_varint_io_read
-    [0, 37, 64, 0x4000, 0x40000000].each do |v|
-      buf = "".b
-      Kantan::H3::Varint.encode(buf, v)
-      io = StringIO.new(buf)
-      io.binmode
-      assert_equal v, Kantan::H3::Varint.read(io)
-    end
-  end
-
   # ── Frames ──────────────────────────────────────────────────────────
 
-  def test_frames_write_read_data
+  def test_frame_reader_data
     buf = "".b
     payload = "hello world".b
     Kantan::H3::Frames.write(buf, Kantan::H3::Frames::DATA, payload)
 
-    io = StringIO.new(buf)
-    io.binmode
-    type, data = Kantan::H3::Frames.read(io)
+    reader = Kantan::H3::Frames::FrameReader.new
+    reader.feed(buf)
+    type, data = reader.next_frame
     assert_equal Kantan::H3::Frames::DATA, type
     assert_equal payload, data
+    assert_nil reader.next_frame
   end
 
-  def test_frames_write_read_headers
+  def test_frame_reader_headers
     buf = "".b
     payload = "\x00\x00\xd1".b
     Kantan::H3::Frames.write(buf, Kantan::H3::Frames::HEADERS, payload)
 
-    io = StringIO.new(buf)
-    io.binmode
-    type, data = Kantan::H3::Frames.read(io)
+    reader = Kantan::H3::Frames::FrameReader.new
+    reader.feed(buf)
+    type, data = reader.next_frame
     assert_equal Kantan::H3::Frames::HEADERS, type
     assert_equal payload, data
+  end
+
+  def test_frame_reader_incomplete
+    reader = Kantan::H3::Frames::FrameReader.new
+    assert_nil reader.next_frame
+
+    # Feed partial frame (type + length but no payload)
+    buf = "".b
+    Kantan::H3::Varint.encode(buf, Kantan::H3::Frames::DATA)
+    Kantan::H3::Varint.encode(buf, 5)
+    reader.feed(buf)
+    assert_nil reader.next_frame
+
+    # Now feed the payload
+    reader.feed("hello".b)
+    type, data = reader.next_frame
+    assert_equal Kantan::H3::Frames::DATA, type
+    assert_equal "hello".b, data
   end
 
   def test_frames_settings_encode_decode
@@ -105,12 +114,6 @@ class TestH3 < Minitest::Test
     payload = Kantan::H3::Frames.encode_settings(settings)
     decoded = Kantan::H3::Frames.decode_settings(payload)
     assert_equal settings, decoded
-  end
-
-  def test_frames_read_eof
-    io = StringIO.new("".b)
-    io.binmode
-    assert_nil Kantan::H3::Frames.read(io)
   end
 
   # ── Session (integration with MockQuic) ─────────────────────────────

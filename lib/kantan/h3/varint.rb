@@ -16,25 +16,6 @@ module Kantan
         end
       end
 
-      # Read a varint from an IO-like object (must support readbyte + read).
-      def self.read(io)
-        first = io.readbyte
-        prefix = first >> 6
-        value = first & 0x3F
-
-        case prefix
-        when 0 then value
-        when 1
-          (value << 8) | io.readbyte
-        when 2
-          rest = io.read(3)
-          (value << 24) | (rest.getbyte(0) << 16) | (rest.getbyte(1) << 8) | rest.getbyte(2)
-        when 3
-          rest = io.read(7)
-          (value << 56) | ("\0".b << rest).unpack1("Q>")
-        end
-      end
-
       # Decode a varint from a buffer at +pos+, returning nil if insufficient data.
       def self.safe_decode(buf, pos = 0)
         return nil if pos >= buf.bytesize

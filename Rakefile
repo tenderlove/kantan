@@ -1,12 +1,26 @@
 require 'rake/testtask'
 
+file "test/fixtures/qifs/qifs" do
+  sh "git submodule update --init test/fixtures/qifs"
+end
+
+file "test/fixtures/hpack-test-case/README.md" do
+  sh "git submodule update --init test/fixtures/hpack-test-case"
+end
+
+file "h2spec/Makefile" do
+  sh "git submodule update --init h2spec"
+end
+
+task :submodules => ["test/fixtures/qifs/qifs", "test/fixtures/hpack-test-case/README.md", "h2spec/Makefile"]
+
 Rake::TestTask.new do |t|
   t.libs << 'test'
   t.test_files = FileList['test/test_*.rb']
   t.verbose = true
 end
 
-file "h2spec/h2spec" do |t|
+file "h2spec/h2spec" => "h2spec/Makefile" do
   cd "h2spec" do
     sh "make"
   end
@@ -36,5 +50,5 @@ task :h2spec => "h2spec/h2spec" do
   end
 end
 
-task :test => :h2spec
+task :test => [:submodules, :h2spec]
 task default: :test
