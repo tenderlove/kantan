@@ -3,13 +3,15 @@
 # Example: fetch a page over HTTP/3 (QUIC).
 #
 # Usage:
-#   fish -c 'chruby ruby-master; ruby -Ilib examples/quic_fetch.rb [host] [port]'
+#   fish -c 'chruby ruby-master; ruby -I../openssl/lib -Ilib examples/quic_fetch.rb [host] [port]'
 #
-# Defaults to localhost:4433 (matching test/quic_server.rb).
+# Defaults to localhost:4433.
 
 require "kantan"
 require "kantan/h3"
-require "kantan/quic/openssl_connection"
+require "kantan/h3/poll_client_session"
+require "openssl"
+require "socket"
 
 class ResponseHandler < Kantan::Handler
   def initialize
@@ -46,15 +48,22 @@ end
 host = ARGV[0] || "localhost"
 port = (ARGV[1] || 4433).to_i
 
-conn = Kantan::QUIC::OpenSSLConnection.new(host, port)
+sock = UDPSocket.new
+sock.connect(host, port)
+
+ctx = OpenSSL::SSL::SSLContext.new(quic: :client)
+ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
+ctx.alpn_protocols = ["h3"]
+
+conn = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+conn.hostname = host
 conn.connect
+conn.default_stream_mode = :none
+conn.blocking_mode = false
 
 handler = ResponseHandler.new
-session = Kantan::H3::Session.new(conn, handler: handler)
-Thread.new { session.connect }
-
-# Give H3 control/QPACK streams time to initialize
-sleep 0.1
+session = Kantan::H3::PollClientSession.new(conn, io: sock, handler: handler)
+Thread.new { session.run }
 
 stream_id = session.request([
   [":method",    "GET"],
@@ -74,4 +83,4 @@ response[:headers].each { |name, value| puts "#{name}: #{value}" }
 puts
 puts response[:body]
 
-conn.close
+session.finish

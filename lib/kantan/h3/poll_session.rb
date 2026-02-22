@@ -45,8 +45,12 @@ module Kantan
         track(@conn)
 
         until @closed
-          # 1. Wait for network activity, using OpenSSL's desired timeout
-          @io.wait_readable(@conn.event_timeout)
+          # 1. Wait for network activity (read or write), using OpenSSL's desired timeout
+          rfds = [@io]
+          wfds = @conn.net_write_desired? ? [@io] : []
+          timeout = @conn.event_timeout
+          timeout = [timeout, 0.01].min if timeout  # ensure frequent ticking
+          IO.select(rfds, wfds, nil, timeout)
 
           # 2. Process QUIC events for this connection
           @conn.handle_events
@@ -55,10 +59,13 @@ module Kantan
           poll_items = @tracked.values
           ready = SSLSocket.poll(poll_items, 0, POLL_FLAG_NO_HANDLE_EVENTS)
 
-          # 4. Dispatch events
+          # 4. Dispatch events (may write response data)
           ready.each { |ssl, revents| dispatch(ssl, revents) }
+
+          # 5. Flush any writes from dispatch
+          @conn.handle_events
         end
-      rescue IOError, OpenSSL::SSL::SSLError
+      rescue IOError, Errno::EBADF, OpenSSL::SSL::SSLError
         # connection closed
       ensure
         @handler.on_close
