@@ -2,6 +2,7 @@
 
 require "openssl"
 require "kantan/h3/frames"
+require "kantan/h3/protocol"
 require "kantan/qpack"
 require "kantan/stream"
 
@@ -15,10 +16,11 @@ module Kantan
     # Safe for use with OSSL_QUIC_server_method and Ractors.
     class PollSession
       include OpenSSL::SSL
+      include Protocol
 
       ALL_EVENTS = 0xFFFFFFFFFFFFFFFF
 
-      def initialize(conn_ssl, io:, handler:)
+      def initialize conn_ssl, io:, handler:
         @conn = conn_ssl
         @conn.default_stream_mode = :none
         @conn.incoming_stream_policy = INCOMING_STREAM_POLICY_ACCEPT
@@ -31,7 +33,7 @@ module Kantan
         @streams = {}       # stream_id => Kantan::Stream
         @ssl_map = {}       # ssl object_id => SSL stream object
         @readers = {}       # stream_id => reader state hash
-        @tracked = []       # all SSL objects to poll
+        @tracked = {}       # all SSL objects to poll
 
         @encoder_stream = nil
         @decoder_stream = nil
@@ -50,9 +52,8 @@ module Kantan
           @conn.handle_events
 
           # 3. Poll all tracked objects (non-blocking, no event processing)
-          poll_items = @tracked.map { |ssl| [ssl, ALL_EVENTS] }
+          poll_items = @tracked.values
           ready = SSLSocket.poll(poll_items, 0, POLL_FLAG_NO_HANDLE_EVENTS)
-          next if ready.empty?
 
           # 4. Dispatch events
           ready.each { |ssl, revents| dispatch(ssl, revents) }
@@ -98,18 +99,15 @@ module Kantan
 
       private
 
-      def track(ssl)
-        @tracked << ssl
+      def track ssl
+        @tracked[ssl] = [ssl, ALL_EVENTS]
       end
 
-      def untrack(ssl)
-        @tracked.delete_if { |s| s.equal?(ssl) }
+      def untrack ssl
+        @tracked.delete(ssl)
       end
 
-      def dispatch(ssl, revents)
-        # Incoming connection (listener events — not used here,
-        # connection is already accepted before PollSession)
-
+      def dispatch ssl, revents
         # Outgoing streams available — create server H3 streams
         if !@server_streams_opened && revents & POLL_EVENT_OSU != 0
           open_server_streams
@@ -144,8 +142,8 @@ module Kantan
         end
       end
 
-      def accept_and_read_streams(ssl)
-        while (stream_ssl = @conn.accept_stream(0))
+      def accept_and_read_streams ssl
+        while stream_ssl = @conn.accept_stream(0)
           sid = stream_ssl.stream_id
           @ssl_map[sid] = stream_ssl
           track(stream_ssl)
@@ -153,10 +151,10 @@ module Kantan
           if sid & 0x02 == 0
             # Bidi — request stream
             @streams[sid] = Stream.new(sid, nil, 0, self, :open, nil, false, nil, false)
-            @readers[sid] = { type: :bidi, reader: Frames::FrameReader.new, fin: false, done: false }
+            @readers[sid] = init_bidi_reader(sid)
           else
             # Uni — type not yet known
-            @readers[sid] = { type: :unknown_uni, buf: "".b }
+            @readers[sid] = init_uni_reader
           end
 
           # Read immediately (like the demo's quic_server_read after accept)
@@ -175,13 +173,13 @@ module Kantan
         ctrl.syswrite(buf)
 
         @encoder_stream = @conn.new_stream(STREAM_FLAG_UNI)
-        @encoder_stream.syswrite([Frames::QPACK_ENCODER].pack("C"))
+        @encoder_stream.syswrite(Frames::QPACK_ENCODER.chr)
 
         @decoder_stream = @conn.new_stream(STREAM_FLAG_UNI)
-        @decoder_stream.syswrite([Frames::QPACK_DECODER].pack("C"))
+        @decoder_stream.syswrite(Frames::QPACK_DECODER.chr)
       end
 
-      def read_stream(ssl, sid)
+      def read_stream ssl, sid
         data = ssl.sysread(16384)
         feed_data(sid, data)
       rescue EOFError
@@ -192,103 +190,10 @@ module Kantan
         untrack(ssl)
       end
 
-      def feed_data(sid, data)
-        state = @readers[sid] or return
+      # ── Protocol adapter ───────────────────────────────────────────
 
-        case state[:type]
-        when :unknown_uni
-          state[:buf] << data
-          classify_uni(sid, state)
-        when :qpack_encoder
-          @decoder.feed_encoder(data)
-        when :qpack_decoder
-          # ignore
-        when :control
-          state[:reader].feed(data)
-          process_control(state)
-        when :bidi
-          state[:reader].feed(data)
-          process_bidi(sid, state)
-        end
-      end
-
-      def feed_fin(sid)
-        state = @readers[sid] or return
-
-        if state[:type] == :bidi && !state[:done]
-          state[:fin] = true
-          process_bidi(sid, state)
-        end
-      end
-
-      def classify_uni(sid, state)
-        result = Varint.safe_decode(state[:buf], 0)
-        return unless result
-
-        stream_type, pos = result
-        remaining = state[:buf].byteslice(pos..) || "".b
-
-        case stream_type
-        when Frames::CONTROL
-          state[:type] = :control
-          state[:reader] = Frames::FrameReader.new
-          state.delete(:buf)
-          if remaining.bytesize > 0
-            state[:reader].feed(remaining)
-            process_control(state)
-          end
-        when Frames::QPACK_ENCODER
-          state[:type] = :qpack_encoder
-          state.delete(:buf)
-          @decoder.feed_encoder(remaining) if remaining.bytesize > 0
-        when Frames::QPACK_DECODER
-          state[:type] = :qpack_decoder
-          state.delete(:buf)
-        else
-          state[:type] = :ignored
-          state.delete(:buf)
-        end
-      end
-
-      def process_control(state)
-        while (frame = state[:reader].next_frame)
-          type, payload = frame
-          case type
-          when Frames::SETTINGS
-            Frames.decode_settings(payload)
-          when Frames::GOAWAY
-            @closed = true
-          end
-        end
-      end
-
-      def process_bidi(sid, state)
-        return if state[:done]
-
-        stream = @streams[sid]
-
-        while (frame = state[:reader].next_frame)
-          type, payload = frame
-          case type
-          when Frames::HEADERS
-            result = @decoder.feed_header(sid, payload)
-            if result
-              decoder_data, headers = result
-              @decoder_stream.syswrite(decoder_data) if decoder_data.bytesize > 0
-              stream.headers = headers
-              @handler.on_headers(stream)
-            end
-          when Frames::DATA
-            stream.data_received += payload.bytesize
-            @handler.on_data(stream, payload)
-          end
-        end
-
-        if state[:fin] && !state[:done]
-          state[:done] = true
-          stream.half_close_remote!
-          @handler.on_request(stream)
-        end
+      def write_decoder_data data
+        @decoder_stream.syswrite(data)
       end
     end
   end

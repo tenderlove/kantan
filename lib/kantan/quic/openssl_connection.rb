@@ -97,6 +97,9 @@ module Kantan
       def close
         @closed = true
         @accept_queue << nil rescue nil
+        puts "#" * 90
+        puts caller
+        puts "#" * 90
         @ssl&.close
       rescue IOError, OpenSSL::SSL::SSLError
         # already closed

@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 require "kantan/h3/frames"
+require "kantan/h3/protocol"
 require "kantan/qpack"
 require "kantan/stream"
 
 module Kantan
   module H3
     class Session
+      include Protocol
+
       QPACK_TABLE_CAPACITY = 4096
       QPACK_BLOCKED        = 100
 
@@ -120,7 +123,7 @@ module Kantan
         @our_decoder_stream.write(dec_buf)
       end
 
-      # ── Write thread (unchanged) ────────────────────────────────────
+      # ── Write thread ──────────────────────────────────────────────────
 
       def start_write_thread
         @writer = Thread.new { write_loop }
@@ -241,20 +244,10 @@ module Kantan
             stream = Stream.new(stream_id, nil, 0, self, :open, nil, false, nil, false)
             @streams[stream_id] = stream
           end
-          @readers[stream_id] = {
-            type: :bidi,
-            reader: Frames::FrameReader.new,
-            stream: @streams[stream_id],
-            fin: false,
-            done: false,
-            blocked: false,
-          }
+          @readers[stream_id] = init_bidi_reader(stream_id)
         else
           # Unidirectional stream — type not yet known
-          @readers[stream_id] = {
-            type: :unknown_uni,
-            buf: "".b,
-          }
+          @readers[stream_id] = init_uni_reader
         end
 
         qs.on_readable = -> { @events << [:data, stream_id] }
@@ -273,143 +266,19 @@ module Kantan
         return unless result
 
         data, fin = result
-
-        case state[:type]
-        when :unknown_uni  then classify_uni(state, stream_id, data, fin)
-        when :qpack_encoder then process_qpack_encoder(data)
-        when :qpack_decoder then process_qpack_decoder(data)
-        when :control       then process_control(state, data, fin)
-        when :bidi          then process_bidi(state, data, fin)
-        end
+        feed_data(stream_id, data)
+        feed_fin(stream_id) if fin
       end
 
-      # ── Unidirectional stream classification ───────────────────────
+      # ── Protocol adapter ───────────────────────────────────────────
 
-      def classify_uni state, stream_id, data, fin
-        state[:buf] << data
-
-        result = Varint.safe_decode(state[:buf], 0)
-        return unless result
-
-        stream_type, pos = result
-        remaining = pos < state[:buf].bytesize ? state[:buf].byteslice(pos, state[:buf].bytesize - pos) : "".b
-
-        case stream_type
-        when Frames::CONTROL
-          state[:type] = :control
-          state[:reader] = Frames::FrameReader.new
-          state.delete(:buf)
-          process_control(state, remaining, fin) if remaining.bytesize > 0 || fin
-        when Frames::QPACK_ENCODER
-          state[:type] = :qpack_encoder
-          state.delete(:buf)
-          process_qpack_encoder(remaining) if remaining.bytesize > 0
-        when Frames::QPACK_DECODER
-          state[:type] = :qpack_decoder
-          state.delete(:buf)
-          process_qpack_decoder(remaining) if remaining.bytesize > 0
-        else
-          # Unknown uni stream type — ignore
-          state.delete(:buf)
-        end
+      def write_decoder_data(data)
+        @our_decoder_stream.write(data)
       end
 
-      # ── QPACK encoder stream ───────────────────────────────────────
-
-      def process_qpack_encoder data
-        return if data.empty?
-        unblocked = @decoder.feed_encoder(data)
-        unblocked.each { |sid| retry_blocked_stream(sid) }
-      end
-
-      # ── QPACK decoder stream ───────────────────────────────────────
-
-      def process_qpack_decoder data
+      def process_qpack_decoder(data)
         return if data.empty?
         @encoder_mu.synchronize { @encoder.feed_decoder(data) }
-      end
-
-      # ── Control stream ─────────────────────────────────────────────
-
-      def process_control state, data, fin
-        state[:reader].feed(data) if data.bytesize > 0
-        while (frame = state[:reader].next_frame)
-          type, payload = frame
-          case type
-          when Frames::SETTINGS
-            _settings = Frames.decode_settings(payload)
-          when Frames::GOAWAY
-            # Handle GOAWAY
-          end
-        end
-      end
-
-      # ── Bidirectional stream ───────────────────────────────────────
-
-      def process_bidi state, data, fin
-        return if state[:done]
-
-        state[:reader].feed(data) if data.bytesize > 0
-        state[:fin] = true if fin
-
-        drain_bidi_frames(state)
-      end
-
-      def drain_bidi_frames state
-        return if state[:blocked] || state[:done]
-
-        stream = state[:stream]
-
-        while (frame = state[:reader].next_frame)
-          type, payload = frame
-
-          case type
-          when Frames::HEADERS
-            result = try_decode_headers(stream.id, payload)
-            unless result
-              state[:blocked] = true
-              return
-            end
-            decoder_data, headers = result
-            @our_decoder_stream.write(decoder_data) if decoder_data.bytesize > 0
-            stream.headers = headers
-            @handler.on_headers(stream)
-
-          when Frames::DATA
-            stream.data_received += payload.bytesize
-            @handler.on_data(stream, payload)
-          end
-        end
-
-        if state[:fin] && !state[:done]
-          state[:done] = true
-          stream.half_close_remote!
-          @handler.on_request(stream)
-        end
-      end
-
-      # ── QPACK header decoding ──────────────────────────────────────
-
-      def try_decode_headers stream_id, payload
-        @decoder.feed_header(stream_id, payload)
-      rescue QPACK::StreamBlocked
-        nil
-      end
-
-      def retry_blocked_stream stream_id
-        state = @readers[stream_id]
-        return unless state && state[:blocked]
-
-        begin
-          decoder_data, headers = @decoder.resume_header(stream_id)
-          @our_decoder_stream.write(decoder_data) if decoder_data.bytesize > 0
-          state[:stream].headers = headers
-          state[:blocked] = false
-          @handler.on_headers(state[:stream])
-          drain_bidi_frames(state)
-        rescue QPACK::StreamBlocked, QPACK::DecompressionFailed
-          # Still blocked
-        end
       end
     end
   end
