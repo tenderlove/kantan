@@ -66,7 +66,7 @@ end
 udp = UDPSocket.new
 udp.bind("0.0.0.0", 4433)
 
-ctx = OpenSSL::SSL::SSLContext.new(quic: :server)
+ctx = OpenSSL::SSL::SSLContext.quic(:server)
 ctx.cert = cert
 ctx.key = key
 ctx.alpn_select_cb = -> (protos) { protos.include?("h3") ? "h3" : protos.first }

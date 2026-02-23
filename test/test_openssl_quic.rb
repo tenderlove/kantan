@@ -18,7 +18,7 @@ class TestOpenSSLQUIC < Minitest::Test
     udp.bind("127.0.0.1", 0)
     port = udp.addr[1]
 
-    ctx = OpenSSL::SSL::SSLContext.new(quic: :server)
+    ctx = OpenSSL::SSL::SSLContext.quic(:server)
     ctx.cert = cert
     ctx.key = key
     ctx.alpn_select_cb = -> (protos) { protos.include?("h3") ? "h3" : protos.first }

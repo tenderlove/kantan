@@ -43,3 +43,28 @@ class TestServerHandler < Kantan::Handler
     @on_request_block&.call(stream)
   end
 end
+
+class OKServer < Kantan::Handler
+  def on_request stream
+    stream.respond([[":status", "200"], ["content-type", "text/plain"]], body: "OK")
+  end
+end
+
+class ByteCountServer < Kantan::Handler
+  def on_request stream
+    stream.respond([[":status", "200"]], body: stream.data_received.to_s)
+  end
+end
+
+class PathEchoServer < Kantan::Handler
+  def on_request stream
+    path = stream.headers.find { |n, _| n == ":path" }[1]
+    stream.respond([[":status", "200"]], body: "response for #{path}")
+  end
+end
+
+class HeadersOnlyServer < Kantan::Handler
+  def on_request stream
+    stream.respond([[":status", "200"], ["content-type", "text/plain"]])
+  end
+end

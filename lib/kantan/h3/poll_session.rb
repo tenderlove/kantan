@@ -187,8 +187,18 @@ module Kantan
       end
 
       def read_stream ssl, sid
-        data = ssl.sysread(16384)
-        feed_data(sid, data)
+        loop do
+          data = ssl.read_nonblock(16384, exception: false)
+          case data
+          when :wait_readable then break
+          when nil
+            feed_fin(sid)
+            untrack(ssl)
+            break
+          else
+            feed_data(sid, data)
+          end
+        end
       rescue EOFError
         feed_fin(sid)
         untrack(ssl)

@@ -51,7 +51,7 @@ port = (ARGV[1] || 4433).to_i
 sock = UDPSocket.new
 sock.connect(host, port)
 
-ctx = OpenSSL::SSL::SSLContext.new(quic: :client)
+ctx = OpenSSL::SSL::SSLContext.quic(:client)
 ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
 ctx.alpn_protocols = ["h3"]
 

@@ -1,16 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "helper"
+require "helper"
+require "openssl"
 require "kantan/h3"
 
-begin
-  require "openssl"
-  require "kantan/h3/poll_session"
-  require "kantan/h3/poll_client_session"
-  OPENSSL_QUIC = OpenSSL::SSL::SSLContext.new(quic: :server) && true
-rescue LoadError, NoMethodError, ArgumentError
-  OPENSSL_QUIC = false
-end
+OPENSSL_QUIC = OpenSSL::SSL::SSLContext.respond_to?(:quic)
 
 class TestH3 < Minitest::Test
   # ── Varint ───────────────────────────────────────────────────────────
@@ -126,26 +120,37 @@ class TestH3 < Minitest::Test
 
   # ── Session (integration with real OpenSSL QUIC) ───────────────────
 
-  def setup_h3_pair
-    cert, key = generate_cert
+  def setup_h3_pair server_handler
+    channel = Ractor::Port.new
 
-    udp = UDPSocket.new
-    udp.bind("127.0.0.1", 0)
-    port = udp.addr[1]
+    server_ractor = Ractor.new(server_handler, channel) do |server_handler, channel|
+      cert, key = generate_cert
 
-    ctx = OpenSSL::SSL::SSLContext.new(quic: :server)
-    ctx.cert = cert
-    ctx.key = key
-    ctx.alpn_select_cb = ->(protos) { protos.include?("h3") ? "h3" : protos.first }
+      udp = UDPSocket.new
+      udp.bind("127.0.0.1", 0)
+      port = udp.addr[1]
 
-    listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
-    listener.blocking_mode = false
-    listener.listen
+      channel << port
 
-    server_handler = TestServerHandler.new
+      ctx = OpenSSL::SSL::SSLContext.quic(:server)
+      ctx.cert = cert
+      ctx.key = key
+      ctx.alpn_select_cb = ->(protos) { protos.include?("h3") ? "h3" : protos.first }
 
-    server_thread = Thread.new do
-      loop do
+      listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
+      listener.blocking_mode = false
+      listener.listen
+
+      running = true
+
+      Thread.new {
+        Ractor.receive
+        running = false
+        listener.close rescue nil
+        udp.close rescue nil
+      }
+
+      while running
         udp.wait_readable(listener.event_timeout)
         listener.handle_events
         r = OpenSSL::SSL::SSLSocket.poll(
@@ -164,15 +169,18 @@ class TestH3 < Minitest::Test
       # shutdown
     end
 
+    port = channel.receive
+
     client_udp = UDPSocket.new
     client_udp.connect("127.0.0.1", port)
 
-    client_ctx = OpenSSL::SSL::SSLContext.new(quic: :client)
+    client_ctx = OpenSSL::SSL::SSLContext.quic(:client)
     client_ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
     client_ctx.alpn_protocols = ["h3"]
 
     client_conn = OpenSSL::SSL::SSLSocket.new(client_udp, client_ctx)
     client_conn.hostname = "localhost"
+
     client_conn.connect
     client_conn.default_stream_mode = :none
     client_conn.blocking_mode = false
@@ -181,17 +189,14 @@ class TestH3 < Minitest::Test
     client_session = Kantan::H3::PollClientSession.new(client_conn, io: client_udp, handler: client_handler)
     client_thread = Thread.new { client_session.run }
 
-    [client_session, client_handler, server_handler, server_thread, listener, udp, client_thread, client_udp]
+    [client_session, client_handler, client_thread, client_udp, server_ractor]
   end
 
   def test_simple_get
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, server_handler, server_thread,
-      listener, udp, client_thread, client_udp = setup_h3_pair
+    server_handler = OKServer.new
 
-    server_handler.on_request_block = ->(stream) {
-      stream.respond([[":status", "200"], ["content-type", "text/plain"]], body: "OK")
-    }
+    client_session, client_handler, client_thread, client_udp, server = setup_h3_pair(server_handler)
 
     stream_id = client_session.request([
       [":method", "GET"],
@@ -216,23 +221,16 @@ class TestH3 < Minitest::Test
 
     client_session.finish
     client_thread.join(5)
+    client_udp.close
+    server << :shutdown
+    server.value
   ensure
-    listener&.close rescue nil
-    udp&.close rescue nil
-    client_udp&.close rescue nil
-    server_thread&.join(5)
   end
 
   def test_post_with_body
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, server_handler, server_thread,
-      listener, udp, client_thread, client_udp = setup_h3_pair
-
-    received_body = nil
-    server_handler.on_request_block = ->(stream) {
-      received_body = stream.data_received
-      stream.respond([[":status", "200"]], body: "accepted")
-    }
+    client_session, client_handler, client_thread, client_udp, server =
+      setup_h3_pair(ByteCountServer.new)
 
     body = "name=test&value=123"
     client_session.request([
@@ -248,33 +246,23 @@ class TestH3 < Minitest::Test
 
     event = client_handler.queue.pop
     assert_equal :data, event[0]
-    assert_equal "accepted", event[1]
+    assert_equal body.bytesize, event[1].to_i
 
     event = client_handler.queue.pop
     assert_equal :done, event[0]
 
-    assert_equal body.bytesize, received_body
-
     client_session.finish
     client_thread.join(5)
+    client_udp.close
+    server << :shutdown
+    server.value
   ensure
-    listener&.close rescue nil
-    udp&.close rescue nil
-    client_udp&.close rescue nil
-    server_thread&.join(5)
   end
 
   def test_multiple_requests
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, server_handler, server_thread,
-      listener, udp, client_thread, client_udp = setup_h3_pair
-
-    request_count = 0
-    server_handler.on_request_block = ->(stream) {
-      request_count += 1
-      path = stream.headers.find { |n, _| n == ":path" }[1]
-      stream.respond([[":status", "200"]], body: "response for #{path}")
-    }
+    client_session, client_handler, client_thread, client_udp, server =
+      setup_h3_pair(PathEchoServer.new)
 
     # First request
     client_session.request([
@@ -298,25 +286,18 @@ class TestH3 < Minitest::Test
     event = client_handler.queue.pop
     assert_equal :done, event[0]
 
-    assert_equal 2, request_count
-
     client_session.finish
     client_thread.join(5)
+    client_udp.close
+    server << :shutdown
+    server.value
   ensure
-    listener&.close rescue nil
-    udp&.close rescue nil
-    client_udp&.close rescue nil
-    server_thread&.join(5)
   end
 
   def test_settings_exchange
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, server_handler, server_thread,
-      listener, udp, client_thread, client_udp = setup_h3_pair
-
-    server_handler.on_request_block = ->(stream) {
-      stream.respond([[":status", "200"]], body: "ok")
-    }
+    client_session, client_handler, client_thread, client_udp, server =
+      setup_h3_pair(OKServer.new)
 
     client_session.request([
       [":method", "GET"], [":path", "/"],
@@ -329,21 +310,16 @@ class TestH3 < Minitest::Test
 
     client_session.finish
     client_thread.join(5)
+    client_udp.close
+    server << :shutdown
+    server.value
   ensure
-    listener&.close rescue nil
-    udp&.close rescue nil
-    client_udp&.close rescue nil
-    server_thread&.join(5)
   end
 
   def test_static_only_headers
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, server_handler, server_thread,
-      listener, udp, client_thread, client_udp = setup_h3_pair
-
-    server_handler.on_request_block = ->(stream) {
-      stream.respond([[":status", "200"], ["content-type", "text/plain"]])
-    }
+    client_session, client_handler, client_thread, client_udp, server =
+      setup_h3_pair(HeadersOnlyServer.new)
 
     client_session.request([
       [":method", "GET"],
@@ -363,10 +339,9 @@ class TestH3 < Minitest::Test
 
     client_session.finish
     client_thread.join(5)
+    client_udp.close
+    server << :shutdown
+    server.value
   ensure
-    listener&.close rescue nil
-    udp&.close rescue nil
-    client_udp&.close rescue nil
-    server_thread&.join(5)
   end
 end
