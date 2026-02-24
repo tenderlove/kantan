@@ -187,16 +187,16 @@ class TestH3 < Minitest::Test
 
     client_handler = TestClientHandler.new
     client_session = Kantan::H3::PollClientSession.new(client_conn, io: client_udp, handler: client_handler)
-    client_thread = Thread.new { client_session.run }
+    client_session.connect
 
-    [client_session, client_handler, client_thread, client_udp, server_ractor]
+    [client_session, client_handler, client_udp, server_ractor]
   end
 
   def test_simple_get
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     server_handler = OKServer.new
 
-    client_session, client_handler, client_thread, client_udp, server = setup_h3_pair(server_handler)
+    client_session, client_handler, client_udp, server = setup_h3_pair(server_handler)
 
     stream_id = client_session.request([
       [":method", "GET"],
@@ -220,7 +220,6 @@ class TestH3 < Minitest::Test
     assert_equal stream_id, event[1]
 
     client_session.finish
-    client_thread.join(5)
     client_udp.close
     server << :shutdown
     server.value
@@ -229,7 +228,7 @@ class TestH3 < Minitest::Test
 
   def test_post_with_body
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, client_thread, client_udp, server =
+    client_session, client_handler, client_udp, server =
       setup_h3_pair(ByteCountServer.new)
 
     body = "name=test&value=123"
@@ -252,7 +251,6 @@ class TestH3 < Minitest::Test
     assert_equal :done, event[0]
 
     client_session.finish
-    client_thread.join(5)
     client_udp.close
     server << :shutdown
     server.value
@@ -261,7 +259,7 @@ class TestH3 < Minitest::Test
 
   def test_multiple_requests
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, client_thread, client_udp, server =
+    client_session, client_handler, client_udp, server =
       setup_h3_pair(PathEchoServer.new)
 
     # First request
@@ -287,7 +285,6 @@ class TestH3 < Minitest::Test
     assert_equal :done, event[0]
 
     client_session.finish
-    client_thread.join(5)
     client_udp.close
     server << :shutdown
     server.value
@@ -296,7 +293,7 @@ class TestH3 < Minitest::Test
 
   def test_settings_exchange
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, client_thread, client_udp, server =
+    client_session, client_handler, client_udp, server =
       setup_h3_pair(OKServer.new)
 
     client_session.request([
@@ -309,7 +306,6 @@ class TestH3 < Minitest::Test
     assert true
 
     client_session.finish
-    client_thread.join(5)
     client_udp.close
     server << :shutdown
     server.value
@@ -318,7 +314,7 @@ class TestH3 < Minitest::Test
 
   def test_static_only_headers
     skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
-    client_session, client_handler, client_thread, client_udp, server =
+    client_session, client_handler, client_udp, server =
       setup_h3_pair(HeadersOnlyServer.new)
 
     client_session.request([
@@ -338,7 +334,6 @@ class TestH3 < Minitest::Test
     assert_equal :done, event[0]
 
     client_session.finish
-    client_thread.join(5)
     client_udp.close
     server << :shutdown
     server.value

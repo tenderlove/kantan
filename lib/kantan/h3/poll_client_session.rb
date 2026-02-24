@@ -34,15 +34,17 @@ module Kantan
         @closed = false
       end
 
-      def run
+      def connect
         open_client_streams
-        event_loop
-      rescue IOError, Errno::EBADF, OpenSSL::SSL::SSLError
-        # connection closed
-      ensure
-        @wakeup_r.close rescue nil
-        @wakeup_w.close rescue nil
-        @handler.on_close
+        @thread = Thread.new do
+          event_loop
+        rescue IOError, Errno::EBADF, OpenSSL::SSL::SSLError
+          # connection closed
+        ensure
+          @wakeup_r.close rescue nil
+          @wakeup_w.close rescue nil
+          @handler.on_close
+        end
       end
 
       def request(headers, body: nil)
@@ -55,6 +57,11 @@ module Kantan
       def finish
         @request_queue << [:shutdown]
         @wakeup_w.write_nonblock(".") rescue nil
+        join
+      end
+
+      def join
+        @thread&.join(5)
       end
 
       def send_headers(stream_id, headers, has_body: false)

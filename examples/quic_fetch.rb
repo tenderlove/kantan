@@ -63,7 +63,7 @@ conn.blocking_mode = false
 
 handler = ResponseHandler.new
 session = Kantan::H3::PollClientSession.new(conn, io: sock, handler: handler)
-Thread.new { session.run }
+session.connect
 
 stream_id = session.request([
   [":method",    "GET"],
