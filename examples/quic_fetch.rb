@@ -52,7 +52,8 @@ sock = UDPSocket.new
 sock.connect(host, port)
 
 ctx = OpenSSL::SSL::SSLContext.quic(:client)
-ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
+ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
+ctx.cert_store = OpenSSL::X509::Store.new.tap(&:set_default_paths)
 ctx.alpn_protocols = ["h3"]
 
 conn = OpenSSL::SSL::SSLSocket.new(sock, ctx)
