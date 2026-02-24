@@ -8,11 +8,15 @@ require "kantan/stream"
 
 module Kantan
   module H3
-    # Single-threaded H3 client session driven by IO.select + wakeup pipe.
-    # Uses quic: :client (non-threaded) — all SSL ops happen in the event loop.
+    # H3 client session driven by IO.select + wakeup pipe.
+    # Uses quic: :client (non-threaded) — event loop thread handles reads.
     #
-    # App threads call #request which pushes to a queue and wakes the event loop.
-    # The event loop creates streams, writes frames, and reads responses.
+    # Usage mirrors H2::Session:
+    #   session.connect
+    #   sid = session.new_stream
+    #   session.send_headers(sid, headers, has_body: true)
+    #   session.send_body(sid, body)
+    #   session.finish
     class PollClientSession
       include OpenSSL::SSL
       include Protocol
@@ -29,7 +33,6 @@ module Kantan
         @ssl_map = {}       # stream_id => SSL stream object
         @readers = {}       # stream_id => reader state hash
 
-        @request_queue = Queue.new
         @wakeup_r, @wakeup_w = IO.pipe
         @closed = false
       end
@@ -47,15 +50,25 @@ module Kantan
         end
       end
 
-      def request(headers, body: nil)
-        result = Queue.new
-        @request_queue << [:request, headers, body, result]
+      def new_stream
+        ssl = @conn.new_stream(0) # bidi
+        sid = ssl.stream_id
+        @ssl_map[sid] = ssl
+        @streams[sid] = Stream.new(sid, nil, 0, self, :idle, nil, false, nil, false)
+        @readers[sid] = init_bidi_reader(sid)
         @wakeup_w.write_nonblock(".") rescue nil
-        result.pop
+        sid
+      end
+
+      def request(headers, body: nil)
+        stream_id = new_stream
+        send_headers(stream_id, headers, has_body: !!body)
+        send_body(stream_id, body) if body
+        stream_id
       end
 
       def finish
-        @request_queue << [:shutdown]
+        @closed = true
         @wakeup_w.write_nonblock(".") rescue nil
         join
       end
@@ -118,7 +131,6 @@ module Kantan
 
       def event_loop
         loop do
-          drain_request_queue
           break if @closed
 
           rfds = [@wakeup_r, @io]
@@ -132,32 +144,6 @@ module Kantan
           accept_streams
           read_streams
         end
-      end
-
-      def drain_request_queue
-        loop do
-          cmd = @request_queue.pop(true) # non-blocking
-          case cmd[0]
-          when :request
-            _, headers, body, result = cmd
-            ssl = @conn.new_stream(0) # bidi
-            sid = ssl.stream_id
-            @ssl_map[sid] = ssl
-
-            stream = Stream.new(sid, nil, 0, self, :idle, nil, false, nil, false)
-            @streams[sid] = stream
-            @readers[sid] = init_bidi_reader(sid)
-
-            send_headers(sid, headers, has_body: !!body)
-            send_body(sid, body) if body
-
-            result << sid
-          when :shutdown
-            @closed = true
-          end
-        end
-      rescue ThreadError
-        # queue empty
       end
 
       def accept_streams
