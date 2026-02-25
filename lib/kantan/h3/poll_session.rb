@@ -28,9 +28,7 @@ module Kantan
           # 1. Wait for network activity (read or write), using OpenSSL's desired timeout
           rfds = [@io]
           wfds = @conn.net_write_desired? ? [@io] : []
-          timeout = @conn.event_timeout
-          timeout = [timeout, 0.01].min if timeout  # ensure frequent ticking
-          IO.select(rfds, wfds, nil, timeout)
+          IO.select(rfds, wfds, nil, @conn.event_timeout)
 
           # 2. Process QUIC events for this connection
           @conn.handle_events
