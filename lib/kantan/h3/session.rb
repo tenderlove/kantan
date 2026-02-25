@@ -76,8 +76,8 @@ module Kantan
         buf = "".b
         Varint.encode(buf, Frames::CONTROL)
         Frames.write(buf, Frames::SETTINGS, Frames.encode_settings({
-          Frames::QPACK_MAX_TABLE_CAPACITY => 4096,
-          Frames::QPACK_BLOCKED_STREAMS => 100,
+          Frames::QPACK_MAX_TABLE_CAPACITY => QPACK_TABLE_CAPACITY,
+          Frames::QPACK_BLOCKED_STREAMS => QPACK_BLOCKED,
         }))
         @control_stream.syswrite(buf)
 
