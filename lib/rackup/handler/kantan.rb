@@ -50,8 +50,8 @@ module Rackup
         listener.blocking_mode = false
         listener.listen
 
-        logger.info "Listening on https://localhost:4433"
-        logger.info "Test with: /opt/homebrew/opt/curl/bin/curl --http3 -k https://localhost:4433/"
+        logger.info "Listening on https://#{host}:#{port}"
+        logger.info "Test with: /opt/homebrew/opt/curl/bin/curl --http3 -k https://#{host}:#{port}/"
 
         trap("INT") { exit }
 

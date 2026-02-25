@@ -117,8 +117,7 @@ module Kantan
       def dispatch ssl, revents
         # Outgoing streams available — create server H3 streams
         if !@server_streams_opened && revents & POLL_EVENT_OSU != 0
-          open_server_streams
-          @server_streams_opened = true
+          @server_streams_opened = open_server_streams
         end
 
         # Incoming streams
@@ -184,6 +183,7 @@ module Kantan
 
         @decoder_stream = @conn.new_stream(STREAM_FLAG_UNI)
         @decoder_stream.syswrite(Frames::QPACK_DECODER.chr)
+        ctrl
       end
 
       def read_stream ssl, sid
