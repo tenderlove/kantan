@@ -65,9 +65,7 @@ module Kantan
       private
 
       def event_loop
-        loop do
-          break if @closed
-
+        until @closed
           rfds = [@wakeup_r, @io]
           wfds = @conn.net_write_desired? ? [@io] : []
 
