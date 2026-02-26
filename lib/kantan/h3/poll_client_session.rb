@@ -69,7 +69,7 @@ module Kantan
 
           IO.select(rfds, wfds, nil, @conn.event_timeout)
 
-          @wakeup_r.read_nonblock(256) rescue nil
+          @wakeup_r.read_nonblock(256, exception: false)
           @conn.handle_events
 
           accept_streams
