@@ -8,13 +8,10 @@ module Kantan
     # No threads — all I/O happens in #run via non-blocking SSL calls.
     # Safe for use with OSSL_QUIC_server_method and Ractors.
     class PollSession < Session
-      def init
-      end
-
       def run
         until @closed
-          rfds = @conn.net_read_desired? ? [@io] : []
-          wfds = @conn.net_write_desired? ? [@io] : []
+          rfds = @conn.net_read_desired? ? [@io] : nil
+          wfds = @conn.net_write_desired? ? [@io] : nil
           IO.select(rfds, wfds, nil, @conn.event_timeout)
 
           @conn.handle_events

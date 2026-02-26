@@ -69,6 +69,9 @@ module Kantan
 
       private
 
+      def init
+      end
+
       def open_streams
         @control_stream = @conn.new_stream(STREAM_FLAG_UNI)
         buf = "".b

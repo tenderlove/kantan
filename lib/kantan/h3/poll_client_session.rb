@@ -14,10 +14,6 @@ module Kantan
     #   session.send_body(sid, body)
     #   session.finish
     class PollClientSession < Session
-      def init
-        @wakeup_r, @wakeup_w = IO.pipe
-      end
-
       def connect
         open_streams
         @thread = Thread.new do
@@ -59,6 +55,11 @@ module Kantan
       end
 
       private
+
+      def init
+        super
+        @wakeup_r, @wakeup_w = IO.pipe
+      end
 
       def event_loop
         until @closed
