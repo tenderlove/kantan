@@ -1,10 +1,6 @@
 # frozen_string_literal: true
 
 require "kantan/h3/session"
-require "kantan/h3/frames"
-require "kantan/h3/protocol"
-require "kantan/qpack"
-require "kantan/stream"
 
 module Kantan
   module H3
@@ -45,7 +41,7 @@ module Kantan
         sid
       end
 
-      def request(headers, body: nil)
+      def request headers, body: nil
         stream_id = new_stream
         send_headers(stream_id, headers, has_body: !!body)
         send_body(stream_id, body) if body
@@ -66,7 +62,8 @@ module Kantan
 
       def event_loop
         until @closed
-          rfds = [@wakeup_r, @io]
+          rfds = [@wakeup_r]
+          rfds << @io if @conn.net_read_desired?
           wfds = @conn.net_write_desired? ? [@io] : []
 
           IO.select(rfds, wfds, nil, @conn.event_timeout)
@@ -76,48 +73,23 @@ module Kantan
 
           accept_streams
           read_streams
+
+          @conn.handle_events
         end
       end
 
       def accept_streams
         while (ssl = @conn.accept_stream(STREAM_FLAG_NO_BLOCK))
-          sid = ssl.stream_id
-          @ssl_map[sid] = ssl
-
-          if sid & 0x02 == 0
-            @streams[sid] = Stream.new(sid, nil, 0, self, :open, nil, false, nil, false)
-            @readers[sid] = init_bidi_reader(sid)
-          else
-            @readers[sid] = init_uni_reader
-          end
+          register_stream(ssl)
         end
       rescue OpenSSL::SSL::SSLError
         # no more streams
       end
 
       def read_streams
-        finished = []
-        @ssl_map.each do |sid, ssl|
-          loop do
-            data = ssl.read_nonblock(16384, exception: false)
-            case data
-            when :wait_readable then break
-            when nil
-              feed_fin(sid)
-              finished << sid
-              break
-            else
-              feed_data(sid, data)
-            end
-          end
-        rescue EOFError
-          feed_fin(sid)
-          finished << sid
-        rescue IOError, OpenSSL::SSL::SSLError
-          feed_fin(sid)
-          finished << sid
+        @ssl_map.to_a.each do |sid, ssl|
+          read_stream(ssl, sid)
         end
-        finished.each { |sid| @ssl_map.delete(sid) }
       end
     end
   end
