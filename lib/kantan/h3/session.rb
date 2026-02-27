@@ -47,9 +47,10 @@ module Kantan
         unless has_body
           ssl.stream_conclude rescue nil
           stream.half_close_local!
+          @ssl_map.delete(stream_id)
         end
       rescue OpenSSL::SSL::SSLError, IOError
-        # write failed
+        @ssl_map.delete(stream_id)
       end
 
       def send_body stream_id, body
@@ -62,8 +63,9 @@ module Kantan
 
         ssl.stream_conclude rescue nil
         @streams.fetch(stream_id).half_close_local!
+        @ssl_map.delete(stream_id)
       rescue OpenSSL::SSL::SSLError, IOError
-        # write failed
+        @ssl_map.delete(stream_id)
       end
 
       private
@@ -106,7 +108,14 @@ module Kantan
           case data
           when :wait_readable then break
           when nil
-            close_stream(ssl, sid)
+            if sid & 0x02 == 0
+              # Bidi request stream: client sent FIN, but we still need to send the
+              # response. Don't remove ssl from @ssl_map — send_headers/send_body
+              # will clean it up after writing the response.
+              feed_fin(sid)
+            else
+              close_stream(ssl, sid)
+            end
             break
           else
             feed_data(sid, data)
