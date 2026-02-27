@@ -55,14 +55,10 @@ module Rackup
         trap("INT") { exit }
 
         loop do
-          udp.wait_readable(listener.event_timeout)
+          rfds = listener.net_read_desired? ? [udp] : []
+          wfds = listener.net_write_desired? ? [udp] : []
+          IO.select(rfds, wfds, nil, listener.event_timeout)
           listener.handle_events
-
-          r = OpenSSL::SSL::SSLSocket.poll(
-            [[listener, OpenSSL::SSL::POLL_EVENT_IC]],
-            0, OpenSSL::SSL::POLL_FLAG_NO_HANDLE_EVENTS
-          )
-          next if r.empty?
 
           conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
           next unless conn
@@ -75,9 +71,6 @@ module Rackup
             logger.error "#{e.class}: #{e.message}"
           end
         end
-
-        # `app` is the Rack app (Rails application)
-        # Start your server, call app.call(env) for each request
       end
     end
   end

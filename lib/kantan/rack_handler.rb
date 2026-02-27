@@ -66,7 +66,7 @@ module Kantan
         "SCRIPT_NAME"     => "",
         "SERVER_NAME"     => @server_name,
         "SERVER_PORT"     => @server_port,
-        "SERVER_PROTOCOL" => "HTTP/2",
+        "SERVER_PROTOCOL" => "HTTP/3",
         "rack.input"      => input,
         "rack.errors"     => $stderr,
       }
