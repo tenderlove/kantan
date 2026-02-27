@@ -15,7 +15,6 @@ module Kantan
 
       def initialize conn_ssl, io:, handler:
         @conn = conn_ssl
-        @conn.default_stream_mode = :none
         @conn.incoming_stream_policy = INCOMING_STREAM_POLICY_ACCEPT
         @io = io
         @handler = handler

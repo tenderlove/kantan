@@ -59,8 +59,6 @@ ctx.alpn_protocols = ["h3"]
 conn = OpenSSL::SSL::SSLSocket.new(sock, ctx)
 conn.hostname = host
 conn.connect
-conn.default_stream_mode = :none
-conn.blocking_mode = false
 
 handler = ResponseHandler.new
 session = Kantan::H3::PollClientSession.new(conn, io: sock, handler: handler)

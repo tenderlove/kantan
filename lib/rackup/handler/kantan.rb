@@ -47,7 +47,6 @@ module Rackup
         ctx.alpn_select_cb = ->(protos) { protos.include?("h3") ? "h3" : protos.first }
 
         listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
-        listener.blocking_mode = false
         listener.listen
 
         logger.info "Listening on https://#{host}:#{port}"

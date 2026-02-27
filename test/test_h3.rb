@@ -138,7 +138,6 @@ class TestH3 < Minitest::Test
       ctx.alpn_select_cb = ->(protos) { protos.include?("h3") ? "h3" : protos.first }
 
       listener = OpenSSL::SSL::SSLSocket.new_listener(udp, context: ctx)
-      listener.blocking_mode = false
       listener.listen
 
       running = true
@@ -181,8 +180,6 @@ class TestH3 < Minitest::Test
     client_conn.hostname = "localhost"
 
     client_conn.connect
-    client_conn.default_stream_mode = :none
-    client_conn.blocking_mode = false
 
     client_handler = TestClientHandler.new
     client_session = Kantan::H3::PollClientSession.new(client_conn, io: client_udp, handler: client_handler)
