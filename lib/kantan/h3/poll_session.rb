@@ -9,9 +9,15 @@ module Kantan
     # Safe for use with OSSL_QUIC_server_method and Ractors.
     class PollSession < Session
       def run
+        rfds = []
+        wfds = []
         until @closed
-          rfds = @conn.net_read_desired? ? [@io] : nil
-          wfds = @conn.net_write_desired? ? [@io] : nil
+          rfds.clear
+          wfds.clear
+
+          rfds << @io if @conn.net_read_desired?
+          wfds << @io if @conn.net_write_desired?
+
           IO.select(rfds, wfds, nil, @conn.event_timeout)
 
           @conn.handle_events

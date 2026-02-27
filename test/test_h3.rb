@@ -150,14 +150,13 @@ class TestH3 < Minitest::Test
         udp.close rescue nil
       }
 
+      channel << port
+
       while running
-        udp.wait_readable(listener.event_timeout)
+        rfds = [udp]
+        wfds = listener.net_write_desired? ? [udp] : []
+        IO.select(rfds, wfds, nil, listener.event_timeout)
         listener.handle_events
-        r = OpenSSL::SSL::SSLSocket.poll(
-          [[listener, OpenSSL::SSL::POLL_EVENT_IC]],
-          0, OpenSSL::SSL::POLL_FLAG_NO_HANDLE_EVENTS
-        )
-        next if r.empty?
 
         conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
         next unless conn

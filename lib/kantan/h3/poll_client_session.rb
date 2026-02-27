@@ -62,10 +62,15 @@ module Kantan
       end
 
       def event_loop
+        rfds = []
+        wfds = []
         until @closed
-          rfds = [@wakeup_r]
+          rfds.clear
+          wfds.clear
+
+          rfds << @wakeup_r
           rfds << @io if @conn.net_read_desired?
-          wfds = @conn.net_write_desired? ? [@io] : []
+          wfds << @io if @conn.net_write_desired?
 
           IO.select(rfds, wfds, nil, @conn.event_timeout)
 
