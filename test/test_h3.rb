@@ -157,8 +157,8 @@ class TestH3 < Minitest::Test
         IO.select(rfds, wfds, nil, listener.event_timeout)
         listener.handle_events
 
-        conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
-        next unless conn
+        conn = listener.accept_connection_nonblock(exception: false)
+        next if conn == :wait_readable
 
         session = Kantan::H3::PollSession.new(conn, io: udp, handler: server_handler)
         session.run

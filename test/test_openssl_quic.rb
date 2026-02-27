@@ -30,14 +30,8 @@ class TestOpenSSLQUIC < Minitest::Test
       loop do
         udp.wait_readable(listener.event_timeout)
         listener.handle_events
-        r = OpenSSL::SSL::SSLSocket.poll(
-          [[listener, OpenSSL::SSL::POLL_EVENT_IC]],
-          0, OpenSSL::SSL::POLL_FLAG_NO_HANDLE_EVENTS
-        )
-        next if r.empty?
-
-        conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
-        next unless conn
+        conn = listener.accept_connection_nonblock(exception: false)
+        next if conn == :wait_readable
 
         handler = TestServerHandler.new
         handler.on_request_block = handler_block

@@ -37,7 +37,7 @@ module Kantan
       private
 
       def accept_streams
-        while (ssl = @conn.accept_stream(0))
+        while (ssl = @conn.accept_stream_nonblock(exception: false)) != :wait_readable
           sid = register_stream(ssl)
           read_stream(ssl, sid)
         end

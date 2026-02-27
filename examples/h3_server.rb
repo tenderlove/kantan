@@ -66,8 +66,8 @@ loop do
   IO.select(rfds, wfds, nil, listener.event_timeout)
   listener.handle_events
 
-  conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
-  next unless conn
+  conn = listener.accept_connection_nonblock(exception: false)
+  next if conn == :wait_readable
 
   $stderr.puts "Accepted connection"
   session = Kantan::H3::PollSession.new(conn, io: udp, handler: MyHandler.new)

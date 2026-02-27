@@ -60,8 +60,8 @@ module Rackup
           IO.select(rfds, wfds, nil, listener.event_timeout)
           listener.handle_events
 
-          conn = listener.accept_connection(OpenSSL::SSL::ACCEPT_CONNECTION_NO_BLOCK)
-          next unless conn
+          conn = listener.accept_connection_nonblock(exception: false)
+          next if conn == :wait_readable
 
           logger.info "new connection (ALPN: #{conn.alpn_protocol})"
           Thread.new(conn) do |c|

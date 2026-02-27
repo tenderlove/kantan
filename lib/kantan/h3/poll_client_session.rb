@@ -85,11 +85,9 @@ module Kantan
       end
 
       def accept_streams
-        while (ssl = @conn.accept_stream(STREAM_FLAG_NO_BLOCK))
+        while (ssl = @conn.accept_stream_nonblock(exception: false)) != :wait_readable
           register_stream(ssl)
         end
-      rescue OpenSSL::SSL::SSLError
-        # no more streams
       end
 
       def read_streams
