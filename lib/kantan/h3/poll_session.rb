@@ -21,7 +21,7 @@ module Kantan
           if timeout = @conn.event_timeout
             IO.select(rfds, wfds, nil, timeout)
           else
-            break if @ssl_map.empty?
+            break
           end
 
           @conn.handle_events

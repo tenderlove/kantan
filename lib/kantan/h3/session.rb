@@ -105,6 +105,13 @@ module Kantan
 
       def read_stream ssl, sid
         loop do
+          state = ssl.stream_read_state
+          if state == OpenSSL::SSL::SSL_STREAM_STATE_RESET_REMOTE ||
+             state == OpenSSL::SSL::SSL_STREAM_STATE_CONN_CLOSED
+            close_stream(ssl, sid)
+            break
+          end
+
           data = ssl.read_nonblock(16384, exception: false)
           case data
           when :wait_readable then break
