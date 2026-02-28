@@ -16,13 +16,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get install -y libssl-dev
-
-      - name: Install OpenSSL with QUIC support
+      - name: Build OpenSSL with QUIC support
         run: |
-          brew install openssl@3
-          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-3.4.0/openssl-3.4.0.tar.gz | tar -xz
+          cd openssl-3.4.0
+          ./Configure --prefix=/opt/openssl no-tests
+          make -j$(nproc)
+          sudo make install_sw
+          sudo sh -c 'echo "/opt/openssl/lib64" > /etc/ld.so.conf.d/openssl-quic.conf'
+          sudo ldconfig
+          echo "OPENSSL_PREFIX=/opt/openssl" >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby-pkgs@v1
