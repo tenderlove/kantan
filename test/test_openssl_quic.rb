@@ -4,7 +4,7 @@ require_relative "helper"
 require "openssl"
 require "kantan/h3/poll_session"
 
-CURL_HTTP3 = "/opt/homebrew/opt/curl/bin/curl"
+CURL_HTTP3 = ENV.fetch("CURL_HTTP3", "/opt/homebrew/opt/curl/bin/curl")
 
 class TestOpenSSLQUIC < Minitest::Test
   def setup
