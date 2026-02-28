@@ -44,7 +44,7 @@ task :h2spec => "h2spec/h2spec" do
   end
 
   begin
-    sh "../h2spec/h2spec -k -p 8888"
+    sh "h2spec/h2spec -k -p 8888"
   ensure
     Process.kill(:TERM, pid)
     Process.wait(pid)
