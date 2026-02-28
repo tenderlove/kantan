@@ -20,10 +20,10 @@ jobs:
         run: |
           curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-3.4.0/openssl-3.4.0.tar.gz | tar -xz
           cd openssl-3.4.0
-          ./Configure --prefix=/opt/openssl no-tests
+          ./Configure --prefix=/opt/openssl --libdir=lib no-tests
           make -j$(nproc)
           sudo make install_sw
-          sudo sh -c 'echo "/opt/openssl/lib64" > /etc/ld.so.conf.d/openssl-quic.conf'
+          sudo sh -c 'echo "/opt/openssl/lib" > /etc/ld.so.conf.d/openssl-quic.conf'
           sudo ldconfig
           echo "OPENSSL_PREFIX=/opt/openssl" >> "$GITHUB_ENV"
 
