@@ -23,7 +23,6 @@ jobs:
         uses: ruby/setup-ruby-pkgs@v1
         with:
           ruby-version: head
-          bundler-cache: true
 
       - name: Set up Go
         uses: actions/setup-go@v5
