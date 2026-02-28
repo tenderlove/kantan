@@ -28,6 +28,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
 
+      - name: Bundle install
+        run: bundle install
+
       - name: Run tests
         env:
           CURL_HTTP3: /usr/bin/curl
