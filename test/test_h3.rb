@@ -4,8 +4,6 @@ require "helper"
 require "openssl"
 require "kantan/h3"
 
-OPENSSL_QUIC = OpenSSL::SSL::SSLContext.respond_to?(:quic)
-
 class TestH3 < Minitest::Test
   # ── Varint ───────────────────────────────────────────────────────────
 
@@ -189,7 +187,6 @@ class TestH3 < Minitest::Test
   end
 
   def test_simple_get
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     server_handler = OKServer.new
 
     client_session, client_handler, client_udp, server = setup_h3_pair(server_handler)
@@ -223,7 +220,6 @@ class TestH3 < Minitest::Test
   end
 
   def test_post_with_body
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     client_session, client_handler, client_udp, server =
       setup_h3_pair(ByteCountServer.new)
 
@@ -254,7 +250,6 @@ class TestH3 < Minitest::Test
   end
 
   def test_multiple_requests
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     client_session, client_handler, client_udp, server =
       setup_h3_pair(PathEchoServer.new)
 
@@ -288,7 +283,6 @@ class TestH3 < Minitest::Test
   end
 
   def test_settings_exchange
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     client_session, client_handler, client_udp, server =
       setup_h3_pair(OKServer.new)
 
@@ -309,7 +303,6 @@ class TestH3 < Minitest::Test
   end
 
   def test_static_only_headers
-    skip "OpenSSL QUIC not available" unless OPENSSL_QUIC
     client_session, client_handler, client_udp, server =
       setup_h3_pair(HeadersOnlyServer.new)
 
