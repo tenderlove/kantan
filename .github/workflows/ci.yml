@@ -49,7 +49,8 @@ jobs:
             --with-openssl-quic \
             --with-nghttp3=/opt/nghttp3 \
             --without-brotli \
-            --without-zstd
+            --without-zstd \
+            --without-libpsl
           make -j$(nproc)
           sudo make install
           sudo sh -c 'echo "/opt/curl/lib" >> /etc/ld.so.conf.d/openssl-quic.conf'
