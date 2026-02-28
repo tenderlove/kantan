@@ -16,18 +16,54 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get install -y libssl-dev
+      - name: Build OpenSSL with QUIC support
+        run: |
+          curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-3.6.1/openssl-3.6.1.tar.gz | tar -xz
+          cd openssl-3.6.1
+          ./Configure --prefix=/opt/openssl --libdir=lib no-tests
+          make -j$(nproc)
+          sudo make install_sw
+          sudo sh -c 'echo "/opt/openssl/lib" > /etc/ld.so.conf.d/openssl-quic.conf'
+          sudo ldconfig
+          echo "OPENSSL_PREFIX=/opt/openssl" >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby-pkgs@v1
         with:
           ruby-version: head
 
+      - name: Build nghttp3
+        run: |
+          curl -fsSL https://github.com/ngtcp2/nghttp3/releases/download/v1.8.0/nghttp3-1.8.0.tar.gz | tar -xz
+          cd nghttp3-1.8.0
+          ./configure --prefix=/opt/nghttp3 --enable-lib-only
+          make -j$(nproc)
+          sudo make install
+
+      - name: Build curl with HTTP/3 support
+        run: |
+          curl -fsSL https://curl.se/download/curl-8.12.1.tar.gz | tar -xz
+          cd curl-8.12.1
+          ./configure --prefix=/opt/curl \
+            --with-openssl=/opt/openssl \
+            --with-openssl-quic \
+            --with-nghttp3=/opt/nghttp3 \
+            --without-brotli \
+            --without-zstd \
+            --without-libpsl
+          make -j$(nproc)
+          sudo make install
+          sudo sh -c 'echo "/opt/curl/lib" >> /etc/ld.so.conf.d/openssl-quic.conf'
+          sudo ldconfig
+          echo "CURL_HTTP3=/opt/curl/bin/curl" >> "$GITHUB_ENV"
+
       - name: Set up Go
         uses: actions/setup-go@v5
 
+      - name: Bundle install
+        run: |
+          bundle config build.openssl --with-openssl-dir="$OPENSSL_PREFIX"
+          bundle install
+
       - name: Run tests
-        env:
-          CURL_HTTP3: /usr/bin/curl
         run: bundle exec rake test
