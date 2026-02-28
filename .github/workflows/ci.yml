@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ruby-versions:
+    uses: ruby/actions/.github/workflows/ruby_versions.yml@master
+
+  test:
+    needs: ruby-versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get install -y libssl-dev
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby-pkgs@v1
+        with:
+          ruby-version: head
+          bundler-cache: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+
+      - name: Run tests
+        run: bundle exec rake test
