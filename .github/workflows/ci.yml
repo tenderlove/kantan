@@ -19,6 +19,11 @@ jobs:
       - name: Install OpenSSL dev headers
         run: sudo apt-get install -y libssl-dev
 
+      - name: Install OpenSSL with QUIC support
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Set up Ruby
         uses: ruby/setup-ruby-pkgs@v1
         with:
@@ -28,7 +33,9 @@ jobs:
         uses: actions/setup-go@v5
 
       - name: Bundle install
-        run: bundle install
+        run: |
+          bundle config build.openssl --with-openssl-dir="$OPENSSL_PREFIX"
+          bundle install
 
       - name: Run tests
         env:
