@@ -100,7 +100,7 @@ class TestRackHandler < Minitest::Test
     assert_equal "", captured_env["SCRIPT_NAME"]
     assert_equal "localhost", captured_env["SERVER_NAME"]
     assert_equal "443", captured_env["SERVER_PORT"]
-    assert_equal "HTTP/2", captured_env["SERVER_PROTOCOL"]
+    assert_equal "HTTP/3", captured_env["SERVER_PROTOCOL"]
     assert_equal "https", captured_env["rack.url_scheme"]
     assert_instance_of StringIO, captured_env["rack.input"]
     # :authority should map to HTTP_HOST

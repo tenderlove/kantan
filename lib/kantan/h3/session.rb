@@ -47,7 +47,7 @@ module Kantan
         unless has_body
           ssl.stream_conclude rescue nil
           stream.half_close_local!
-          @ssl_map.delete(stream_id)
+          @ssl_map.delete(stream_id) if stream.closed?
         end
       rescue OpenSSL::SSL::SSLError, IOError
         @ssl_map.delete(stream_id)
@@ -62,8 +62,9 @@ module Kantan
         ssl.syswrite(buf)
 
         ssl.stream_conclude rescue nil
-        @streams.fetch(stream_id).half_close_local!
-        @ssl_map.delete(stream_id)
+        stream = @streams.fetch(stream_id)
+        stream.half_close_local!
+        @ssl_map.delete(stream_id) if stream.closed?
       rescue OpenSSL::SSL::SSLError, IOError
         @ssl_map.delete(stream_id)
       end
