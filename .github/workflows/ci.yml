@@ -32,6 +32,30 @@ jobs:
         with:
           ruby-version: head
 
+      - name: Build nghttp3
+        run: |
+          curl -fsSL https://github.com/ngtcp2/nghttp3/releases/download/v1.8.0/nghttp3-1.8.0.tar.gz | tar -xz
+          cd nghttp3-1.8.0
+          ./configure --prefix=/opt/nghttp3 --enable-lib-only
+          make -j$(nproc)
+          sudo make install
+
+      - name: Build curl with HTTP/3 support
+        run: |
+          curl -fsSL https://curl.se/download/curl-8.12.1.tar.gz | tar -xz
+          cd curl-8.12.1
+          ./configure --prefix=/opt/curl \
+            --with-openssl=/opt/openssl \
+            --with-openssl-quic \
+            --with-nghttp3=/opt/nghttp3 \
+            --without-brotli \
+            --without-zstd
+          make -j$(nproc)
+          sudo make install
+          sudo sh -c 'echo "/opt/curl/lib" >> /etc/ld.so.conf.d/openssl-quic.conf'
+          sudo ldconfig
+          echo "CURL_HTTP3=/opt/curl/bin/curl" >> "$GITHUB_ENV"
+
       - name: Set up Go
         uses: actions/setup-go@v5
 
@@ -41,6 +65,4 @@ jobs:
           bundle install
 
       - name: Run tests
-        env:
-          CURL_HTTP3: /usr/bin/curl
         run: bundle exec rake test
