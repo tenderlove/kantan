@@ -18,7 +18,11 @@ module Kantan
           rfds << @io if @conn.net_read_desired?
           wfds << @io if @conn.net_write_desired?
 
-          IO.select(rfds, wfds, nil, @conn.event_timeout)
+          if timeout = @conn.event_timeout
+            IO.select(rfds, wfds, nil, timeout)
+          else
+            break if @ssl_map.empty?
+          end
 
           @conn.handle_events
 

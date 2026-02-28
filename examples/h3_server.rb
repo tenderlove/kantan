@@ -66,6 +66,7 @@ loop do
   IO.select(rfds, wfds, nil, listener.event_timeout)
   listener.handle_events
 
+  puts "waiting for connection"
   conn = listener.accept_connection_nonblock(exception: false)
   next if conn == :wait_readable
 
