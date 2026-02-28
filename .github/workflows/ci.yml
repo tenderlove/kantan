@@ -29,4 +29,6 @@ jobs:
         uses: actions/setup-go@v5
 
       - name: Run tests
+        env:
+          CURL_HTTP3: /usr/bin/curl
         run: bundle exec rake test
