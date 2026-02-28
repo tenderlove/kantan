@@ -44,7 +44,7 @@ module Kantan
       end
 
       def read_streams
-        @ssl_map.to_a.each do |sid, ssl|
+        @ssl_map.each do |sid, ssl|
           read_stream(ssl, sid)
         end
       end
