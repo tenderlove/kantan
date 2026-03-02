@@ -67,8 +67,15 @@ loop do
   listener.handle_events
 
   puts "waiting for connection"
-  conn = listener.accept_connection_nonblock(exception: false)
-  next if conn == :wait_readable
+  conn = nil
+  loop do
+    conn = listener.accept_connection_nonblock(exception: false)
+    break unless conn == :wait_readable
+    rfds = listener.net_read_desired? ? [server_udp] : []
+    wfds = listener.net_write_desired? ? [server_udp] : []
+    IO.select(rfds, wfds, nil, listener.event_timeout)
+    listener.handle_events
+  end
 
   $stderr.puts "Accepted connection"
   session = Kantan::H3::PollSession.new(conn, io: udp, handler: MyHandler.new)
