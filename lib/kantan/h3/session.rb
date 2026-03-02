@@ -104,6 +104,11 @@ module Kantan
       end
 
       def read_stream ssl, sid
+        # Only read uni streams when they have buffered data.
+        # Calling SSL_read on a uni stream with no data triggers a QUIC
+        # tick that can interfere with bidi stream data flushing.
+        return if sid & 0x02 != 0 && ssl.pending == 0
+
         loop do
           state = ssl.stream_read_state
           if state == OpenSSL::SSL::SSL_STREAM_STATE_RESET_REMOTE ||
@@ -282,6 +287,19 @@ module Kantan
 
       def write_decoder_data data
         @decoder_stream&.syswrite(data)
+      end
+
+      def read_streams
+        @ssl_map.each do |sid, ssl|
+          read_stream(ssl, sid)
+        end
+      end
+
+      def accept_streams
+        while (ssl = @conn.accept_stream_nonblock(exception: false)) != :wait_readable
+          sid = register_stream(ssl)
+          read_stream(ssl, sid)
+        end
       end
     end
   end

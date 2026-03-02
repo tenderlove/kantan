@@ -15,7 +15,6 @@ module Kantan
     #   session.finish
     class PollClientSession < Session
       def connect
-        open_streams
         @thread = Thread.new do
           event_loop
         rescue IOError, Errno::EBADF, OpenSSL::SSL::SSLError
@@ -74,6 +73,19 @@ module Kantan
       def event_loop
         rfds = []
         wfds = []
+
+        # Wait for handshake
+        until @conn.init_finished?
+          rfds.clear
+          wfds.clear
+          rfds << @io if @conn.net_read_desired?
+          wfds << @io if @conn.net_write_desired?
+          IO.select(rfds, wfds, nil, @conn.event_timeout)
+          @conn.handle_events
+        end
+
+        open_streams
+
         until @closed
           rfds.clear
           wfds.clear
@@ -91,18 +103,6 @@ module Kantan
           read_streams
 
           @conn.handle_events
-        end
-      end
-
-      def accept_streams
-        while (ssl = @conn.accept_stream_nonblock(exception: false)) != :wait_readable
-          register_stream(ssl)
-        end
-      end
-
-      def read_streams
-        @ssl_map.to_a.each do |sid, ssl|
-          read_stream(ssl, sid)
         end
       end
     end
