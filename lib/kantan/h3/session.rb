@@ -36,7 +36,9 @@ module Kantan
       def send_headers stream_id, headers, has_body: false
         ssl = @ssl_map[stream_id] or return
 
-        _enc_data, field_section = @encoder.encode(stream_id, headers)
+        enc_data, field_section = @encoder.encode(stream_id, headers)
+
+        write_encoder_data(enc_data) if enc_data.bytesize > 0
 
         buf = "".b
         Frames.write(buf, Frames::HEADERS, field_section)
@@ -223,7 +225,11 @@ module Kantan
           type, payload = frame
           case type
           when Frames::SETTINGS
-            Frames.decode_settings(payload)
+            settings = Frames.decode_settings(payload)
+            peer_capacity = settings[Frames::QPACK_MAX_TABLE_CAPACITY]
+            if peer_capacity && peer_capacity > 0
+              @encoder.update_max_table_capacity(peer_capacity)
+            end
           when Frames::GOAWAY
             @closed = true
           end
@@ -283,6 +289,10 @@ module Kantan
         rescue QPACK::StreamBlocked, QPACK::DecompressionFailed
           # Still blocked
         end
+      end
+
+      def write_encoder_data data
+        @encoder_stream&.syswrite(data)
       end
 
       def write_decoder_data data

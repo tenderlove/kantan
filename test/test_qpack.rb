@@ -161,6 +161,31 @@ module Kantan
         end
       end
 
+      # --- Generate tests for real-world captures ---
+      real_world_dir = File.expand_path("fixtures/qpack-real-world", __dir__)
+      if File.directory?(real_world_dir)
+        Dir.glob(File.join(real_world_dir, "*.out.*")).sort.each do |encoded_path|
+          qif_name = qif_name_from_encoded(encoded_path)
+          qif_path = File.join(real_world_dir, "#{qif_name}.qif")
+          next unless File.exist?(qif_path)
+
+          capacity, blocked = params_from_filename(encoded_path)
+          safe_name = qif_name.gsub(/[^a-zA-Z0-9]/, "_")
+          test_name = "test_real_world_#{safe_name}"
+
+          define_method(test_name) do
+            expected = self.class.parse_qif(qif_path)
+            actual = self.class.decode_fixture(encoded_path, capacity, blocked)
+
+            assert_equal expected.length, actual.length,
+              "#{qif_name}: wrong number of header lists (expected #{expected.length}, got #{actual.length})"
+            expected.each_with_index do |exp_headers, i|
+              assert_equal exp_headers, actual[i], "#{qif_name}: header list #{i} mismatch"
+            end
+          end
+        end
+      end
+
       # --- Error tests ---
       # err9/err10 test static table bounds from an older draft (1-based indexing)
       # where index 0 and index 62 were invalid. In RFC 9204 (0-based, 99 entries)
@@ -501,6 +526,99 @@ module Kantan
           encoder.feed_decoder(dec_data) unless dec_data.empty?
           assert_equal headers, decoded, "header list #{i} mismatch"
         end
+      end
+
+      # --- update_max_table_capacity ---
+
+      def test_update_max_table_capacity_enables_dynamic
+        encoder = Encoder.new(0)
+        decoder = Decoder.new(4096, 100)
+
+        headers = [[":method", "GET"], [":authority", "example.com"]]
+
+        # With capacity 0, no encoder stream data should be produced
+        enc1, fs1 = encoder.encode(4, headers)
+        assert_empty enc1
+        _, decoded1 = decoder.feed_header(4, fs1)
+        assert_equal headers, decoded1
+
+        # Update capacity — next encode should produce encoder stream data
+        encoder.update_max_table_capacity(4096)
+        enc2, fs2 = encoder.encode(8, headers)
+        refute_empty enc2
+        decoder.feed_encoder(enc2)
+        _, decoded2 = decoder.feed_header(8, fs2)
+        assert_equal headers, decoded2
+      end
+
+      def test_update_max_table_capacity_reuse_across_streams
+        encoder = Encoder.new(0)
+        decoder = Decoder.new(4096, 100)
+
+        headers = [
+          [":method", "GET"],
+          [":scheme", "https"],
+          [":authority", "example.com"],
+          ["x-custom", "hello"],
+        ]
+
+        # Enable dynamic table
+        encoder.update_max_table_capacity(4096)
+
+        # First encode — inserts into dynamic table
+        enc1, fs1 = encoder.encode(4, headers)
+        decoder.feed_encoder(enc1)
+        dec1, decoded1 = decoder.feed_header(4, fs1)
+        encoder.feed_decoder(dec1) unless dec1.empty?
+        assert_equal headers, decoded1
+
+        # Second encode — reuses dynamic entries (less encoder data)
+        enc2, fs2 = encoder.encode(8, headers)
+        decoder.feed_encoder(enc2) unless enc2.empty?
+        dec2, decoded2 = decoder.feed_header(8, fs2)
+        encoder.feed_decoder(dec2) unless dec2.empty?
+        assert_equal headers, decoded2
+
+        assert_operator enc2.bytesize, :<, enc1.bytesize
+      end
+
+      def test_update_max_table_capacity_to_zero_disables_dynamic
+        encoder = Encoder.new(4096)
+        decoder = Decoder.new(4096, 100)
+
+        headers = [[":method", "GET"], [":authority", "example.com"]]
+
+        # With capacity, produces encoder stream data
+        enc1, _ = encoder.encode(4, headers)
+        refute_empty enc1
+
+        # Shrink to zero — should stop producing encoder stream data
+        encoder.update_max_table_capacity(0)
+        enc2, fs2 = encoder.encode(8, headers)
+
+        # Feed any encoder data (capacity change instruction)
+        decoder.feed_encoder(enc1)
+        decoder.feed_encoder(enc2) unless enc2.empty?
+        _, decoded = decoder.feed_header(8, fs2)
+        assert_equal headers, decoded
+      end
+
+      def test_update_max_table_capacity_sends_capacity_instruction
+        encoder = Encoder.new(0)
+        decoder = Decoder.new(4096, 100)
+
+        encoder.update_max_table_capacity(4096)
+
+        # Encode static-only headers — encoder stream should still contain
+        # the Set Dynamic Table Capacity instruction
+        headers = [[":method", "GET"], [":scheme", "https"]]
+        enc_data, fs = encoder.encode(4, headers)
+        refute_empty enc_data
+
+        # Decoder should accept the capacity instruction
+        decoder.feed_encoder(enc_data)
+        _, decoded = decoder.feed_header(4, fs)
+        assert_equal headers, decoded
       end
 
       # --- QIF round-trip ---

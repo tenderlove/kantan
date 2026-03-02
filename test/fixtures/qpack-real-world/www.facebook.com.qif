@@ -1,0 +1,75 @@
+:status	200
+vary	Accept-Encoding
+set-cookie	fr=0RG9QhzAeRfQVAZqq..Bppe1y..AAA.0.0.Bppe1y.AWfWelG95XEh-dR5t5_L_fgNtD8; expires=Sun, 31-May-2026 20:05:06 GMT; Max-Age=7776000; path=/; domain=.facebook.com; secure; httponly
+accept-ch-lifetime	4838400
+accept-ch	viewport-width,dpr,Sec-CH-Prefers-Color-Scheme,Sec-CH-UA-Full-Version-List,Sec-CH-UA-Platform-Version,Sec-CH-UA-Model
+reporting-endpoints	coop_report="https://www.facebook.com/browser_reporting/coop/?minimize=0", default="https://www.facebook.com/ajax/browser_error_reports/?device_level=unknown&brsid=7612751820867105962&cpp=C3&cv=1034302344&st=1772481906950", permissions_policy="https://www.facebook.com/ajax/browser_error_reports/"
+report-to	{"max_age":2592000,"endpoints":[{"url":"https:\/\/www.facebook.com\/browser_reporting\/coop\/?minimize=0"}],"group":"coop_report","include_subdomains":true}, {"max_age":259200,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/?device_level=unknown&brsid=7612751820867105962&cpp=C3&cv=1034302344&st=1772481906950"}]}, {"max_age":21600,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/"}],"group":"permissions_policy"}
+content-security-policy	default-src blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;script-src *.facebook.com *.fbcdn.net *.facebook.net 127.0.0.1:* 'nonce-jh4SjJNa' blob: 'self' connect.facebook.net 'unsafe-eval' https://*.google-analytics.com *.google.com;style-src *.fbcdn.net data: *.facebook.com 'unsafe-inline' https://fonts.googleapis.com;connect-src *.facebook.com facebook.com *.fbcdn.net *.facebook.net wss://*.facebook.com:* wss://*.whatsapp.com:* wss://*.fbcdn.net attachment.fbsbx.com ws://localhost:* blob: *.cdninstagram.com 'self' http://localhost:3103 wss://gateway.facebook.com wss://edge-chat.facebook.com wss://snaptu-d.facebook.com wss://kaios-d.facebook.com/ v.whatsapp.net *.fbsbx.com *.fb.com *.instagram.com https://*.google-analytics.com;font-src data: *.facebook.com *.fbcdn.net *.fbsbx.com https://fonts.gstatic.com;img-src *.fbcdn.net *.facebook.com data: https://*.fbsbx.com facebook.com *.cdninstagram.com fbsbx.com fbcdn.net connect.facebook.net blob: android-webview-video-poster: *.whatsapp.net *.fb.com *.oculuscdn.com *.tenor.co *.tenor.com *.giphy.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://*.google-analytics.com;media-src *.cdninstagram.com blob: *.fbcdn.net *.fbsbx.com www.facebook.com *.facebook.com data: *.tenor.co *.tenor.com https://*.giphy.com;child-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;frame-src *.facebook.com *.fbsbx.com fbsbx.com data: www.instagram.com *.fbcdn.net accounts.meta.com *.accounts.meta.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://td.doubleclick.net *.google.com *.doubleclick.net;manifest-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;object-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;worker-src blob: *.facebook.com data:;block-all-mixed-content;upgrade-insecure-requests;
+x-frame-options	DENY
+document-policy	force-load-at-top
+document-policy	include-js-call-stacks-in-crash-reports
+permissions-policy	accelerometer=(), attribution-reporting=(self), autoplay=(), bluetooth=(), browsing-topics=(self), camera=(self "https://www.fbsbx.com"), ch-device-memory=(), ch-downlink=(), ch-dpr=(), ch-ect=(), ch-rtt=(), ch-save-data=(), ch-ua-arch=(), ch-ua-bitness=(), ch-viewport-height=(), ch-viewport-width=(), ch-width=(), clipboard-read=(self), clipboard-write=(self), compute-pressure=(), display-capture=(self), encrypted-media=(self), fullscreen=(self), gamepad=*, geolocation=(self), gyroscope=(), hid=(), idle-detection=(), interest-cohort=(self), keyboard-map=(), local-fonts=(), magnetometer=(), microphone=(self), midi=(), otp-credentials=(), payment=(), picture-in-picture=(self), private-state-token-issuance=(), publickey-credentials-get=(self), screen-wake-lock=(), serial=(), shared-storage=(), shared-storage-select-url=(), private-state-token-redemption=(), usb=(), unload=(self), window-management=(), xr-spatial-tracking=(self);report-to="permissions_policy"
+cross-origin-resource-policy	same-origin
+cross-origin-opener-policy	unsafe-none
+pragma	no-cache
+cache-control	private, no-cache, no-store, must-revalidate
+expires	Sat, 01 Jan 2000 00:00:00 GMT
+x-content-type-options	nosniff
+x-xss-protection	0
+origin-agent-cluster	?1
+strict-transport-security	max-age=15552000; preload
+content-type	text/html; charset="utf-8"
+x-fb-debug	QhhtNeuMHdqwBxjPm8KgXA5iOSsFn70esIas2BCMwiKdUeBOyLg/gRbGreKO4dbeP6nNPHJQCb86rl/ZCIjG1g==
+date	Mon, 02 Mar 2026 20:05:06 GMT
+x-fb-connection-quality	EXCELLENT; q=0.9, rtt=3, rtx=0, c=24, mss=1232, tbw=5110, tp=9, tpl=0, uplat=36, ullat=0
+alt-svc	h3=":443"; ma=86400
+priority	u=3,i
+
+:status	200
+vary	Accept-Encoding
+edge-control	max-age=86400
+content-type	text/plain; charset=utf-8
+reporting-endpoints	coop_report="https://www.facebook.com/browser_reporting/coop/?minimize=0", default="https://www.facebook.com/ajax/browser_error_reports/?device_level=high&brsid=7612635173449984243&cpp=C3&cv=1034302344&st=1772454747009", permissions_policy="https://www.facebook.com/ajax/browser_error_reports/"
+report-to	{"max_age":2592000,"endpoints":[{"url":"https:\/\/www.facebook.com\/browser_reporting\/coop\/?minimize=0"}],"group":"coop_report","include_subdomains":true}, {"max_age":259200,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/?device_level=high&brsid=7612635173449984243&cpp=C3&cv=1034302344&st=1772454747009"}]}, {"max_age":3600,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/?device_level=high&brsid=7612635173449984243&cpp=C3&cv=1034302344&st=1772454747009"}],"group":"network-errors"}, {"max_age":21600,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/"}],"group":"permissions_policy"}
+content-security-policy	default-src blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;script-src *.facebook.com *.fbcdn.net *.facebook.net 127.0.0.1:* 'nonce-0O5vNWyJ' blob: 'self' connect.facebook.net 'wasm-unsafe-eval' https://*.google-analytics.com *.google.com;style-src *.fbcdn.net data: *.facebook.com 'unsafe-inline' https://fonts.googleapis.com;connect-src *.facebook.com facebook.com *.fbcdn.net *.facebook.net wss://*.facebook.com:* wss://*.whatsapp.com:* wss://*.fbcdn.net attachment.fbsbx.com ws://localhost:* blob: *.cdninstagram.com 'self' http://localhost:3103 wss://gateway.facebook.com wss://edge-chat.facebook.com wss://snaptu-d.facebook.com wss://kaios-d.facebook.com/ v.whatsapp.net *.fbsbx.com *.fb.com *.instagram.com https://*.google-analytics.com;font-src data: *.facebook.com *.fbcdn.net *.fbsbx.com https://fonts.gstatic.com;img-src *.fbcdn.net *.facebook.com data: https://*.fbsbx.com facebook.com *.cdninstagram.com fbsbx.com fbcdn.net connect.facebook.net blob: android-webview-video-poster: *.whatsapp.net *.fb.com *.oculuscdn.com *.tenor.co *.tenor.com *.giphy.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://*.google-analytics.com;media-src *.cdninstagram.com blob: *.fbcdn.net *.fbsbx.com www.facebook.com *.facebook.com data: *.tenor.co *.tenor.com https://*.giphy.com;child-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;frame-src *.facebook.com *.fbsbx.com fbsbx.com data: www.instagram.com *.fbcdn.net accounts.meta.com *.accounts.meta.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://td.doubleclick.net *.google.com *.doubleclick.net;manifest-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;object-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;worker-src blob: *.facebook.com data:;block-all-mixed-content;upgrade-insecure-requests;
+nel	{"report_to":"network-errors","max_age":3600,"failure_fraction":0.01}
+x-frame-options	DENY
+document-policy	force-load-at-top
+document-policy	include-js-call-stacks-in-crash-reports
+permissions-policy	accelerometer=(), attribution-reporting=(self), autoplay=(), bluetooth=(), browsing-topics=(self), camera=(self "https://www.fbsbx.com"), ch-device-memory=(), ch-downlink=(), ch-dpr=(), ch-ect=(), ch-rtt=(), ch-save-data=(), ch-ua-arch=(), ch-ua-bitness=(), ch-viewport-height=(), ch-viewport-width=(), ch-width=(), clipboard-read=(self), clipboard-write=(self), compute-pressure=(), display-capture=(self), encrypted-media=(self), fullscreen=(self), gamepad=*, geolocation=(self), gyroscope=(), hid=(), idle-detection=(), interest-cohort=(self), keyboard-map=(), local-fonts=(), magnetometer=(), microphone=(self), midi=(), otp-credentials=(), payment=(), picture-in-picture=(self), private-state-token-issuance=(), publickey-credentials-get=(self), screen-wake-lock=(), serial=(), shared-storage=(), shared-storage-select-url=(), private-state-token-redemption=(), usb=(), unload=(self), window-management=(), xr-spatial-tracking=(self);report-to="permissions_policy"
+cross-origin-resource-policy	same-origin
+cross-origin-opener-policy	same-origin-allow-popups
+pragma	no-cache
+cache-control	private, no-cache, no-store, must-revalidate
+expires	Tue, 03 Mar 2026 12:32:26 +0000
+x-content-type-options	nosniff
+x-xss-protection	0
+origin-agent-cluster	?1
+strict-transport-security	max-age=15552000; preload
+x-fb-debug	O5LcTbRllP2wTznGViGBbu4PnFdk0MW8s3SNXZ+kgCUEMuzte3NJKhqha83qzncTsbimKfdZBQL2gA31gft4Zg==
+date	Mon, 02 Mar 2026 12:32:27 GMT
+priority	u=3,i
+
+:status	200
+vary	Accept-Encoding
+content-type	image/png
+reporting-endpoints	coop_report="https://www.facebook.com/browser_reporting/coop/?minimize=0", default="https://www.facebook.com/ajax/browser_error_reports/?device_level=unknown&brsid=7612751824487849315&cpp=C3&cv=1034302344&st=1772481907222", permissions_policy="https://www.facebook.com/ajax/browser_error_reports/"
+report-to	{"max_age":2592000,"endpoints":[{"url":"https:\/\/www.facebook.com\/browser_reporting\/coop\/?minimize=0"}],"group":"coop_report","include_subdomains":true}, {"max_age":259200,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/?device_level=unknown&brsid=7612751824487849315&cpp=C3&cv=1034302344&st=1772481907222"}]}, {"max_age":21600,"endpoints":[{"url":"https:\/\/www.facebook.com\/ajax\/browser_error_reports\/"}],"group":"permissions_policy"}
+content-security-policy	default-src blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;script-src *.facebook.com *.fbcdn.net *.facebook.net 127.0.0.1:* 'nonce-t8EcZ5ZN' blob: 'self' connect.facebook.net 'unsafe-eval' https://*.google-analytics.com *.google.com;style-src *.fbcdn.net data: *.facebook.com 'unsafe-inline' https://fonts.googleapis.com;connect-src *.facebook.com facebook.com *.fbcdn.net *.facebook.net wss://*.facebook.com:* wss://*.whatsapp.com:* wss://*.fbcdn.net attachment.fbsbx.com ws://localhost:* blob: *.cdninstagram.com 'self' http://localhost:3103 wss://gateway.facebook.com wss://edge-chat.facebook.com wss://snaptu-d.facebook.com wss://kaios-d.facebook.com/ v.whatsapp.net *.fbsbx.com *.fb.com *.instagram.com https://*.google-analytics.com;font-src data: *.facebook.com *.fbcdn.net *.fbsbx.com https://fonts.gstatic.com;img-src *.fbcdn.net *.facebook.com data: https://*.fbsbx.com facebook.com *.cdninstagram.com fbsbx.com fbcdn.net connect.facebook.net blob: android-webview-video-poster: *.whatsapp.net *.fb.com *.oculuscdn.com *.tenor.co *.tenor.com *.giphy.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://*.google-analytics.com;media-src *.cdninstagram.com blob: *.fbcdn.net *.fbsbx.com www.facebook.com *.facebook.com data: *.tenor.co *.tenor.com https://*.giphy.com;child-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;frame-src *.facebook.com *.fbsbx.com fbsbx.com data: www.instagram.com *.fbcdn.net accounts.meta.com *.accounts.meta.com https://trustly.one/ https://*.trustly.one/ https://paywithmybank.com/ https://*.paywithmybank.com/ https://www.googleadservices.com https://googleads.g.doubleclick.net https://www.google.com https://td.doubleclick.net *.google.com *.doubleclick.net;manifest-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;object-src data: blob: 'self' https://*.fbsbx.com *.facebook.com *.fbcdn.net;worker-src blob: *.facebook.com data:;block-all-mixed-content;upgrade-insecure-requests;
+x-frame-options	DENY
+document-policy	force-load-at-top
+document-policy	include-js-call-stacks-in-crash-reports
+permissions-policy	accelerometer=(), attribution-reporting=(self), autoplay=(), bluetooth=(), browsing-topics=(self), camera=(self "https://www.fbsbx.com"), ch-device-memory=(), ch-downlink=(), ch-dpr=(), ch-ect=(), ch-rtt=(), ch-save-data=(), ch-ua-arch=(), ch-ua-bitness=(), ch-viewport-height=(), ch-viewport-width=(), ch-width=(), clipboard-read=(self), clipboard-write=(self), compute-pressure=(), display-capture=(self), encrypted-media=(self), fullscreen=(self), gamepad=*, geolocation=(self), gyroscope=(), hid=(), idle-detection=(), interest-cohort=(self), keyboard-map=(), local-fonts=(), magnetometer=(), microphone=(self), midi=(), otp-credentials=(), payment=(), picture-in-picture=(self), private-state-token-issuance=(), publickey-credentials-get=(self), screen-wake-lock=(), serial=(), shared-storage=(), shared-storage-select-url=(), private-state-token-redemption=(), usb=(), unload=(self), window-management=(), xr-spatial-tracking=(self);report-to="permissions_policy"
+cross-origin-resource-policy	cross-origin
+cross-origin-opener-policy	same-origin-allow-popups
+pragma	no-cache
+cache-control	private, no-cache, no-store, must-revalidate
+expires	Sat, 01 Jan 2000 00:00:00 GMT
+x-content-type-options	nosniff
+x-xss-protection	0
+origin-agent-cluster	?1
+strict-transport-security	max-age=15552000; preload
+x-fb-debug	Po7aRswVDN9hXDqoXAfvmmcoaJABik6HNEQWdE9hG/GqPSoovtv8OR+3WwLix2Ftwg2DU7nQ8G/S2uYVyo+eaA==
+date	Mon, 02 Mar 2026 20:05:07 GMT
+priority	u=3,i

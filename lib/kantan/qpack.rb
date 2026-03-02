@@ -490,7 +490,17 @@ module Kantan
         @full_index = {} # {name => {value => absolute_index}}
         @name_index = {} # {name => absolute_index}
 
-        @capacity_sent = false
+        @capacity_sent = max_table_capacity == 0
+      end
+
+      # Update the maximum table capacity (called when peer SETTINGS arrive).
+      # The encoder will send a Set Dynamic Table Capacity instruction on
+      # the next encode call.
+      def update_max_table_capacity new_max
+        @max_table_capacity = new_max
+        @capacity = new_max
+        @capacity_sent = new_max == 0
+        evict
       end
 
       # Encode headers for a stream. Returns [encoder_stream_data, field_section_data].
