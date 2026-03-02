@@ -37,6 +37,16 @@ module Kantan
         sid
       end
 
+      def send_headers stream_id, headers, has_body: false
+        super
+        @wakeup_w.write_nonblock(".") rescue nil
+      end
+
+      def send_body stream_id, body
+        super
+        @wakeup_w.write_nonblock(".") rescue nil
+      end
+
       def request headers, body: nil
         stream_id = new_stream
         send_headers(stream_id, headers, has_body: !!body)
