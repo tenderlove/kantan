@@ -11,6 +11,19 @@ module Kantan
       def run
         rfds = []
         wfds = []
+
+        # Wait for handshake
+        until @conn.init_finished?
+          rfds.clear
+          wfds.clear
+          rfds << @io if @conn.net_read_desired?
+          wfds << @io if @conn.net_write_desired?
+          IO.select(rfds, wfds, nil, @conn.event_timeout)
+          @conn.handle_events
+        end
+
+        open_streams
+
         until @closed
           rfds.clear
           wfds.clear
@@ -26,7 +39,6 @@ module Kantan
 
           @conn.handle_events
 
-          open_streams if !@control_stream && @conn.init_finished?
           accept_streams
           read_streams
 
@@ -49,6 +61,11 @@ module Kantan
 
       def read_streams
         @ssl_map.each do |sid, ssl|
+          # Only read uni streams when they have buffered data.
+          # Calling SSL_read on a uni stream with no data triggers a QUIC
+          # tick that can interfere with bidi stream data flushing.
+          next if sid & 0x02 != 0 && ssl.pending == 0
+
           read_stream(ssl, sid)
         end
       end
