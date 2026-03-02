@@ -28,7 +28,6 @@ class BenchClientHandler < Kantan::Handler
   attr_reader :queue
   def initialize = (@queue = Queue.new)
   def on_request(stream)
-    p "got response"
     @queue << stream.id
   end
 end
@@ -53,13 +52,21 @@ HEADERS = [
   [":path",      "/"],
   [":scheme",    "https"],
   [":authority", "localhost"],
-].freeze
+].to_h
+
+$request_id = 0
+def make_req
+  h = HEADERS.dup
+  h["x-request-id"] = $request_id.to_s
+  $request_id += 1
+  h.to_a
+end
 
 # ── Warmup ────────────────────────────────────────────────────────────────────
 
 print "Warming up (#{WARMUP} requests)... "
 WARMUP.times do
-  session.request(HEADERS)
+  session.request(make_req)
   handler.queue.pop
 end
 puts "done"
@@ -73,7 +80,7 @@ t_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
 REQUESTS.times do
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  session.request(HEADERS)
+  session.request(make_req)
   handler.queue.pop
   latencies << Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
 end
