@@ -24,6 +24,8 @@ BODY_SIZE = (ENV["BODY_SIZE"] || 64).to_i
 
 # ── Client ────────────────────────────────────────────────────────────────────
 
+SPINNER = %w[| / - \\]
+
 class BenchClientHandler < Kantan::Handler
   attr_reader :queue
   def initialize = (@queue = Queue.new)
@@ -64,29 +66,31 @@ end
 
 # ── Warmup ────────────────────────────────────────────────────────────────────
 
-print "Warming up (#{WARMUP} requests)... "
-WARMUP.times do
+puts "Warming up (#{WARMUP} requests)..."
+WARMUP.times do |i|
   session.request(make_req)
   handler.queue.pop
+  print "\r  #{SPINNER[i % 4]} #{i + 1}/#{WARMUP}"
 end
-puts "done"
+puts "\r  done#{" " * 20}"
 
 # ── Benchmark ─────────────────────────────────────────────────────────────────
 
-print "Running #{REQUESTS} requests... "
+puts "Running #{REQUESTS} requests..."
 
 latencies = []
 t_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-REQUESTS.times do
+REQUESTS.times do |i|
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   session.request(make_req)
   handler.queue.pop
   latencies << Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+  print "\r  #{SPINNER[i % 4]} #{i + 1}/#{REQUESTS}"
 end
 
 elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t_start
-puts "done"
+puts "\r  done#{" " * 20}"
 
 session.finish
 udp.close
