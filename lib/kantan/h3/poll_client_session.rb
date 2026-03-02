@@ -55,6 +55,7 @@ module Kantan
 
       def finish
         @closed = true
+        @conn.sysclose rescue nil
         @wakeup_w.write_nonblock(".") rescue nil
         join
       end
