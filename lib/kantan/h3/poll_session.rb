@@ -13,7 +13,7 @@ module Kantan
         wfds = []
 
         # Wait for handshake
-        until @conn.init_finished?
+        until @conn.accept_nonblock(exception: false) == @conn
           rfds.clear
           wfds.clear
           rfds << @io if @conn.net_read_desired?
